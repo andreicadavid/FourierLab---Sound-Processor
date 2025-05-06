@@ -1,0 +1,19 @@
+| Nr. | Funcționalitate nouă                                                | Librărie / Modul          |
+| --- | ------------------------------------------------------------------- | ------------------------- |
+| 1   | **Pitch‑shift avansat** (n\_steps, semitone)                        | `librosa.effects`         |
+| 2   | **Reverb, Delay, Echo** (IR convolution, tap‑delay)                 | `numpy`, `scipy.signal`   |
+| 3   | **Spectrogramă & Chroma**                                           | `librosa.display`         |
+| 4   | **Segmentare automată** (detecție onset‑uri)                        | `librosa.onset`           |
+| 5   | **Time‑stretching după BPM**                                        | `librosa.effects`         |
+| 6   | **Melspectrogramă & MFCC**                                          | `librosa.feature`         |
+| 7   | **Constant‑Q Transform** (pitch‑clasă variabilă)                    | `librosa.cqt`             |
+| 8   | **Caracteristici spectrale statistice**                             |                           |
+|     | – spectral\_centroid, bandwidth, rolloff, contrast                  | `librosa.feature`         |
+| 9   | **Pitch tracking & tuning** (piptrack, estimate\_tuning)            | `librosa.feature`         |
+| 10  | **Delta & Stack Memory** (delta features & temporal context)        | `librosa.feature`         |
+| 11  | **Export annotation & times** (CSV / praat)                         | `librosa.output`          |
+| 12  | **Caching intermediar** (joblib.Memory pentru rezultate librosa)    | `librosa` + `joblib`      |
+| 13  | **Filtre DSP** (LPF, HPF, band‑pass)                                | `scipy.signal`            |
+| 14  | **Equalizer, Compressor, Distortion**                               | algoritmi custom/`scipy`  |
+| 15  | **Streaming avansat** (control device‑uri, latencies, multi‑device) | `sounddevice` / `PyAudio` |
+| 16  | **UI: slider‑e, device picker, buffer size, metadate proiect**      | `tkinter/ttk`, `pickle`   |
