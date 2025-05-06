@@ -109,54 +109,57 @@ class MainWindow:
         self.tuning_entry = ttk.Entry(right_frame, textvariable=self.tuning_var, state="readonly")
         self.tuning_entry.grid(row=5, column=1, padx=5, pady=5)
 
-
-        # Buttons
+        # --- Buttons: grupare pe rânduri și categorii ---
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(padx=10, pady=5)
-        ttk.Button(btn_frame, text="Înregistrează", command=self.record).grid(row=0, column=0, padx=5)
-        ttk.Button(btn_frame, text="Redă", command=self.play).grid(row=0, column=1, padx=5)
-        ttk.Button(btn_frame, text="Pitch Up", command=self.pitch_up).grid(row=0, column=2, padx=5)
-        ttk.Button(btn_frame, text="Pitch Down", command=self.pitch_down).grid(row=0, column=3, padx=5)
-        ttk.Button(btn_frame, text="Aplică Reverb", command=self.apply_reverb).grid(row=0, column=4, padx=5)
-        ttk.Button(btn_frame, text="Salvează", command=self.save_recording).grid(row=0, column=5, padx=5)
-        ttk.Button(btn_frame, text="Încarcă", command=self.load_recording).grid(row=0, column=6, padx=5)
-        ttk.Button(btn_frame, text="Spectrogramă", command=self.generate_spectrogram).grid(row=1, column=0, padx=5)
-        ttk.Button(btn_frame, text="Chroma", command=self.generate_chroma).grid(row=1, column=1, padx=5)
 
-        #time-strech
-        self.bpm_label = tk.Label(root, text="Target BPM:")
+        # Rând 0: Înregistrare, redare, salvare, undo
+        ttk.Button(btn_frame, text="Înregistrează", command=self.record).grid(row=0, column=0, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Redă", command=self.play).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Salvează", command=self.save_recording).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Încarcă", command=self.load_recording).grid(row=0, column=3, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Undo", command=self.undo).grid(row=0, column=4, padx=5, pady=5)
+
+        # Rând 1: Efecte audio
+        ttk.Button(btn_frame, text="Pitch Up", command=self.pitch_up).grid(row=1, column=0, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Pitch Down", command=self.pitch_down).grid(row=1, column=1, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Aplică Reverb", command=self.apply_reverb).grid(row=1, column=2, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Aplică Echo", command=self.apply_echo).grid(row=1, column=3, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Aplică Compressor", command=self.apply_compressor).grid(row=1, column=4, padx=5,
+                                                                                            pady=5)
+
+        # Rând 2: Analiză și vizualizare
+        ttk.Button(btn_frame, text="Spectrogramă", command=self.generate_spectrogram).grid(row=2, column=0, padx=5,
+                                                                                           pady=5)
+        ttk.Button(btn_frame, text="Chroma", command=self.generate_chroma).grid(row=2, column=1, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Onsets", command=self.plot_waveform_with_onsets).grid(row=2, column=2, padx=5,
+                                                                                          pady=5)
+        ttk.Button(btn_frame, text="Mel Spectrogram", command=self.generate_mel_spectrogram).grid(row=2, column=3,
+                                                                                                  padx=5, pady=5)
+        ttk.Button(btn_frame, text="MFCC", command=self.generate_mfcc).grid(row=2, column=4, padx=5, pady=5)
+        ttk.Button(btn_frame, text="CQT", command=self.generate_cqt).grid(row=2, column=5, padx=5, pady=5)
+        ttk.Button(btn_frame, text="Caracteristici Spectrale", command=self.show_spectral_features).grid(row=2,
+                                                                                                         column=6,
+                                                                                                         padx=5, pady=5)
+
+        # Rând 3: Filtre DSP
+        ttk.Label(btn_frame, text="Filtre DSP:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        ttk.Button(btn_frame, text="LPF", command=self.apply_lpf).grid(row=3, column=1, padx=5, pady=5)
+        ttk.Button(btn_frame, text="HPF", command=self.apply_hpf).grid(row=3, column=2, padx=5, pady=5)
+        ttk.Button(btn_frame, text="BPF", command=self.apply_bpf).grid(row=3, column=3, padx=5, pady=5)
+
+        # --- Time-stretch (poate fi sub butoane, nu în grid) ---
+        self.bpm_label = tk.Label(self.root, text="Target BPM:")
         self.bpm_label.pack()
-        self.bpm_entry = tk.Entry(root)
+        self.bpm_entry = tk.Entry(self.root)
         self.bpm_entry.pack()
-        self.bpm_button = tk.Button(root, text="Apply Stretch", command=self.apply_time_stretch)
+        self.bpm_button = tk.Button(self.root, text="Apply Stretch", command=self.apply_time_stretch)
         self.bpm_button.pack(pady=5)
 
-        # Adăugarea butonului pentru Echo
-        ttk.Button(btn_frame, text="Aplică Echo", command=self.apply_echo).grid(row=1, column=5, padx=5)
-
-        # Plot canvas
+        # --- Plot canvas ---
         self.fig, self.ax = plt.subplots(figsize=(8, 4))
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.root)
         self.canvas.get_tk_widget().pack(padx=10, pady=10)
-
-        #onsets
-        ttk.Button(btn_frame, text="Onsets", command=self.plot_waveform_with_onsets).grid(row=1, column=2, padx=5)
-
-        # Adăugarea butonului pentru Mel Spectrogram
-        ttk.Button(btn_frame, text="Mel Spectrogram", command=self.generate_mel_spectrogram).grid(row=1, column=3, padx=5)
-
-        # Adăugarea butonului pentru MFCC
-        ttk.Button(btn_frame, text="MFCC", command=self.generate_mfcc).grid(row=1, column=4, padx=5)
-
-        # Adăugarea butonului pentru Constant-Q Transform (CQT)
-        ttk.Button(btn_frame, text="CQT", command=self.generate_cqt).grid(row=1, column=6, padx=5)
-        #undo
-        ttk.Button(btn_frame, text="Undo", command=self.undo).grid(row=1, column=7, padx=5)
-
-        #carecteristici spectrale
-        ttk.Button(btn_frame, text="Caracteristici Spectrale", command=self.show_spectral_features).grid(row=2,
-                                                                                                         column=0,
-                                                                                                         padx=5)
 
     def update_fields(self):
         """
@@ -281,6 +284,91 @@ class MainWindow:
             self.update_fields()
         except Exception as e:
             messagebox.showerror("Eroare", f"Eroare la aplicarea efectului de echo: {e}")
+
+    def apply_compressor(self):
+        # Poți folosi un dialog pentru a seta parametrii, sau folosește valori implicite pentru început
+        try:
+            # Exemplu cu valori implicite (poți extinde cu un dialog pentru parametri)
+            threshold_db = -20.0
+            ratio = 4.0
+            attack_ms = 10.0
+            release_ms = 100.0
+
+            self.service.apply_simple_compressor(
+                threshold_db=threshold_db,
+                ratio=ratio,
+                # attack_ms=attack_ms,
+                # release_ms=release_ms
+            )
+            self.update_plot()
+            self.service.play()
+            self.update_fields()
+
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la aplicarea compresorului: {e}")
+
+    def test_compressor(self):
+        if self.service.recording is None:
+            messagebox.showinfo("Info", "Nu există înregistrare pentru test.")
+            return
+
+        y_original = np.copy(self.service.recording.data)
+        sr = self.service.recording.sample_rate
+
+        # Aplică compresorul fără normalizare
+        _, y_compressed = self.service.apply_simple_compressor(normalize=False)
+
+        # Calculează RMS și amplitudinea maximă
+        def rms(x): return np.sqrt(np.mean(x ** 2))
+
+        rms_orig = rms(y_original)
+        rms_comp = rms(y_compressed)
+        max_orig = np.max(np.abs(y_original))
+        max_comp = np.max(np.abs(y_compressed))
+
+        # Plot
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(y_original, label="Original", alpha=0.7)
+        ax.plot(y_compressed, label="Compresat (fără normalizare)", alpha=0.7)
+        ax.set_title("Comparație semnal original vs. compresat")
+        ax.set_xlabel("Eșantion")
+        ax.set_ylabel("Amplitudine")
+        ax.legend()
+        ax.grid(True)
+        plt.show()
+
+        # Afișează valorile
+        print(f"RMS original: {rms_orig:.4f}, RMS compresat: {rms_comp:.4f}")
+        print(f"Max original: {max_orig:.4f}, Max compresat: {max_comp:.4f}")
+
+    def apply_lpf(self):
+        try:
+            self.service.apply_lowpass_filter(cutoff_hz=1000.0, order=5)
+            self.update_plot()
+            self.service.play()
+            self.update_fields()
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la LPF: {e}")
+
+    def apply_hpf(self):
+        try:
+            self.service.apply_highpass_filter(cutoff_hz=1000.0, order=5)
+            self.update_plot()
+            self.service.play()
+            self.update_fields()
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la HPF: {e}")
+
+    def apply_bpf(self):
+        try:
+            self.service.apply_bandpass_filter(lowcut_hz=300.0, highcut_hz=3000.0, order=5)
+            self.update_plot()
+            self.service.play()
+            self.update_fields()
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la BPF: {e}")
+
 
     def undo(self):
         """

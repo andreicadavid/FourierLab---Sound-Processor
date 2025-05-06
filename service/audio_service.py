@@ -4,7 +4,8 @@ import librosa
 import librosa.display
 import scipy.io.wavfile as wav
 import matplotlib.pyplot as plt
-from scipy.signal import lfilter
+from scipy.signal import lfilter, butter
+import math
 
 from domain.recording import Recording
 
@@ -125,6 +126,27 @@ class AudioService:
         self.recording = Recording(echo_signal, sr)
         return self.recording
 
+    def apply_distortion(self, gain=20.0, level=1.0):
+        """
+        Distortion extrem: semn(x) * |x|^0.3 pentru sunet foarte agresiv.
+        """
+        if self.recording is None:
+            print("Nu există înregistrare pentru distortion.")
+            return None
+
+        self.save_state()
+
+        y = self.recording.data * gain
+        # Funcție nonlineară foarte agresivă
+        distorted = np.sign(y) * (np.abs(y) ** 0.3)
+        # Normalizează
+        max_val = np.max(np.abs(distorted))
+        if max_val > 0:
+            distorted = distorted / max_val * level
+
+        self.recording = Recording(distorted, self.recording.sample_rate)
+        return self.recording
+
     def calculate_spectral_features(self):
         if self.recording is None:
             print("Nu există înregistrare pentru calculul caracteristicilor spectrale.")
@@ -205,45 +227,33 @@ class AudioService:
         return float(tempo)
 
     def apply_time_stretch_bpm(self, target_bpm):
-        """
-        Aplică time-stretching pe baza BPM-ului țintă introdus.
-        :param target_bpm: BPM‑ul la care vrem să ajungem.
-        """
         if self.recording is None:
             print("Nu există înregistrare pentru time-stretching.")
             return
+        self.save_state()
+        y = self.recording.data
+        sr = self.recording.sample_rate
+        original_bpm, _ = librosa.beat.beat_track(y=y, sr=sr)
+        if isinstance(original_bpm, np.ndarray):
+            original_bpm = float(original_bpm.item())
+        print("DEBUG BPM:", original_bpm, type(original_bpm))
 
-        # Estimarea BPM-ului original
-        original_bpm = self.estimate_bpm()
         if original_bpm is None or original_bpm <= 0:
             print("Nu s-a putut estima BPM-ul original.")
             return
 
-        # Calcularea rate-ului de time-stretch
         stretch_rate = target_bpm / original_bpm
         print(f"Original BPM: {original_bpm:.2f}, Țintă BPM: {target_bpm:.2f}, Stretch Rate: {stretch_rate:.3f}")
 
         try:
-            # Pas 1: Obține spectrograma
-            stft = librosa.stft(self.recording.data)
-
-            # Pas 2: Aplică time-stretching pe spectrogramă
-            stretched_stft = librosa.effects.time_stretch(stft, stretch_rate)
-
-            # Pas 3: Reconstruiește semnalul audio în domeniul temporal
-            y_stretched = librosa.istft(stretched_stft)
-
-            # Normalizare opțională
+            y_stretched = librosa.effects.time_stretch(y, rate=stretch_rate)
             max_val = np.max(np.abs(y_stretched))
             if max_val > 0:
                 y_stretched = y_stretched / max_val
-
-            # Actualizarea înregistrării
-            self.recording = Recording(y_stretched, self.config.sample_rate)
+            self.recording = Recording(y_stretched, sr)
             print("Time-stretching aplicat cu succes.")
         except Exception as e:
             print(f"Eroare la aplicarea time-stretching: {e}")
-
 
     def load_audio(self, path):
         self.recording, self.config.sample_rate = librosa.load(path, sr=None)
@@ -302,6 +312,105 @@ class AudioService:
         cqt = librosa.cqt(y=y, sr=sr)
         cqt_db = librosa.amplitude_to_db(np.abs(cqt), ref=np.max)
         return cqt_db, sr
+
+    def apply_simple_compressor(self, threshold_db=-30.0, ratio=8.0, normalize=False):
+        """
+        Compresor audio simplu, fără attack/release.
+        :param threshold_db: Pragul de la care începe compresia (în dB, ex: -10.0)
+        :param ratio: Raportul de compresie (ex: 4.0)
+        :param normalize: Normalizează semnalul după compresie (True/False)
+        """
+        if self.recording is None:
+            print("Nu există înregistrare pentru compresor.")
+            return None, None
+
+        y = self.recording.data
+        sr = self.recording.sample_rate
+
+        # Pragul în amplitudine
+        threshold = 10 ** (threshold_db / 20.0)
+
+        out = np.copy(y)
+        for i in range(len(y)):
+            if abs(y[i]) > threshold:
+                # Aplica compresia doar peste prag
+                sign = np.sign(y[i])
+                out[i] = sign * (threshold + (abs(y[i]) - threshold) / ratio)
+            # altfel, semnalul rămâne neschimbat
+
+        if normalize:
+            max_val = np.max(np.abs(out))
+            if max_val > 0:
+                out = out / max_val
+
+        self.recording = Recording(out, sr)
+        return self.recording, out
+
+    def apply_lowpass_filter(self, cutoff_hz=1000.0, order=5):
+        """
+        Aplică un filtru trece-jos (LPF) pe semnalul curent.
+        :param cutoff_hz: Frecvența de tăiere (Hz)
+        :param order: Ordinul filtrului
+        """
+        if self.recording is None:
+            print("Nu există înregistrare pentru filtrare.")
+            return None
+
+        self.save_state()
+        y = self.recording.data
+        sr = self.recording.sample_rate
+
+        nyq = 0.5 * sr
+        normal_cutoff = cutoff_hz / nyq
+        b, a = butter(order, normal_cutoff, btype='low', analog=False)
+        filtered = lfilter(b, a, y)
+        self.recording = Recording(filtered, sr)
+        return self.recording
+
+    def apply_highpass_filter(self, cutoff_hz=1000.0, order=5):
+        """
+        Aplică un filtru trece-sus (HPF) pe semnalul curent.
+        :param cutoff_hz: Frecvența de tăiere (Hz)
+        :param order: Ordinul filtrului
+        """
+        if self.recording is None:
+            print("Nu există înregistrare pentru filtrare.")
+            return None
+
+        self.save_state()
+        y = self.recording.data
+        sr = self.recording.sample_rate
+
+        nyq = 0.5 * sr
+        normal_cutoff = cutoff_hz / nyq
+        b, a = butter(order, normal_cutoff, btype='high', analog=False)
+        filtered = lfilter(b, a, y)
+        self.recording = Recording(filtered, sr)
+        return self.recording
+
+    def apply_bandpass_filter(self, lowcut_hz=300.0, highcut_hz=3000.0, order=5):
+        """
+        Aplică un filtru trece-bandă (BPF) pe semnalul curent.
+        :param lowcut_hz: Frecvența de tăiere inferioară (Hz)
+        :param highcut_hz: Frecvența de tăiere superioară (Hz)
+        :param order: Ordinul filtrului
+        """
+        if self.recording is None:
+            print("Nu există înregistrare pentru filtrare.")
+            return None
+
+        self.save_state()
+        y = self.recording.data
+        sr = self.recording.sample_rate
+
+        nyq = 0.5 * sr
+        low = lowcut_hz / nyq
+        high = highcut_hz / nyq
+        b, a = butter(order, [low, high], btype='band', analog=False)
+        filtered = lfilter(b, a, y)
+        self.recording = Recording(filtered, sr)
+        return self.recording
+
 
 
 
