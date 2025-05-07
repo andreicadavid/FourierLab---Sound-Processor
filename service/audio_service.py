@@ -1,4 +1,5 @@
 import numpy as np
+import scipy
 import sounddevice as sd
 import librosa
 import librosa.display
@@ -15,14 +16,72 @@ class AudioService:
         self.undo_stack = []
         self.config = config
         self.recording = None
+        self.cache = []
 
     def record(self, duration_seconds):
         print("Începere înregistrare...")
-        data = sd.rec(int(duration_seconds * self.config.sample_rate), samplerate=self.config.sample_rate, channels=1,
-                      dtype='float64')
+        data = sd.rec(
+            int(duration_seconds * self.config.sample_rate),
+            samplerate=self.config.sample_rate,
+            channels=1,
+            dtype='float64',
+            device=self.config.input_device,
+            blocksize=self.config.buffer_size
+        )
         sd.wait()
         self.recording = Recording(data.flatten(), self.config.sample_rate)
+        self.cache_state("recording")
         print("Înregistrare finalizată.")
+
+    def cache_state(self, effect_name, params=None):
+        """
+        Salvează starea curentă a înregistrării în cache, cu numele efectului și parametrii.
+        """
+        if self.recording is not None:
+            self.cache.append({
+                "data": np.copy(self.recording.data),
+                "sample_rate": self.recording.sample_rate,
+                "effect": effect_name,
+                "params": params if params else {}
+            })
+
+    def load_from_cache(self, index):
+        """
+        Încarcă o stare din cache după index.
+        """
+        if 0 <= index < len(self.cache):
+            cached = self.cache[index]
+            self.recording = Recording(np.copy(cached["data"]), cached["sample_rate"])
+            return True
+        return False
+
+    def get_cache_history(self):
+        """
+        Returnează o listă cu descrierea pașilor din cache.
+        """
+        return [
+            f"{i}: {entry['effect']} {entry['params']}" for i, entry in enumerate(self.cache)
+        ]
+
+    def export_onsets(self, filepath):
+        """
+        Detectează onsets și exportă timpii (în secunde) într-un fișier CSV/TXT.
+        """
+        if self.recording is None:
+            print("Nu există înregistrare pentru export onsets.")
+            return False
+
+        y = self.recording.data
+        sr = self.recording.sample_rate
+        onset_frames = librosa.onset.onset_detect(y=y, sr=sr)
+        onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+
+        with open(filepath, "w") as f:
+            f.write("onset_time_sec\n")
+            for t in onset_times:
+                f.write(f"{t:.6f}\n")
+        print(f"Onsets exportate în {filepath}")
+        return True
 
 
     def save_recording(self, filename):
@@ -34,7 +93,12 @@ class AudioService:
 
     def play(self):
         if self.recording:
-            sd.play(self.recording.data, self.recording.sample_rate)
+            sd.play(
+                self.recording.data,
+                self.recording.sample_rate,
+                device=self.config.output_device,
+                blocksize=self.config.buffer_size
+            )
             sd.wait()
         else:
             print("Nu există înregistrare pentru redare.")
@@ -61,90 +125,162 @@ class AudioService:
         if self.recording:
             n_steps = 12 * np.log2(self.config.pitch_factor) if up else -12 * np.log2(self.config.pitch_factor)
             shifted = librosa.effects.pitch_shift(self.recording.data, sr=self.recording.sample_rate, n_steps=n_steps)
+            self.cache_state("pitch_shift", {})
             return Recording(shifted, self.recording.sample_rate)
         else:
             print("Nu există înregistrare pentru pitch shift.")
             return None
 
-    def apply_reverb(self, decay=0.5, delay=0.02, ir_duration=0.5):
+    def apply_reverb_with_ir(self, ir_path="C:\Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav"):
         if self.recording is None:
             print("Nu există înregistrare pentru aplicarea reverbului.")
             return None
 
-        self.save_state()  # Salvează starea înainte de aplicarea efectului
-        sr = self.recording.sample_rate
+        self.save_state()
         data = self.recording.data
+        sr = self.recording.sample_rate
 
-        ir_length = int(ir_duration * sr)
-        t = np.linspace(0, ir_duration, ir_length)
-        ir = np.zeros(ir_length)
-        start_idx = int(delay * sr)
-        if start_idx < ir_length:
-            ir[start_idx] = 1.0
-        ir[start_idx:] += decay ** (t[start_idx:] / ir_duration)
+        # Încarcă IR-ul
+        import librosa
+        ir, ir_sr = librosa.load(ir_path, sr=None)
+        if ir_sr != sr:
+            ir = librosa.resample(ir, orig_sr=ir_sr, target_sr=sr)
+        ir = ir / np.max(np.abs(ir))
 
-        convolved = np.convolve(data, ir, mode='full')
+        from scipy.signal import fftconvolve
+        convolved = fftconvolve(data, ir, mode='full')
         reverb_signal = convolved[:len(data)]
 
         max_val = np.max(np.abs(reverb_signal))
         if max_val > 0:
-            reverb_signal = reverb_signal / max_val
+            reverb_signal = reverb_signal / max_val * 0.95
 
         self.recording = Recording(reverb_signal, sr)
+        self.cache_state("Reverb (IR)", {"ir_file": ir_path})
         return self.recording
 
-    def apply_echo(self, decay=0.5, delay=0.2):
-        """
-        Aplică efectul de echo folosind scipy.signal.lfilter.
-        :param decay: Factor de atenuare pentru semnalul întârziat (0-1).
-        :param delay: Întârzierea semnalului în secunde.
-        """
+    def apply_echo(self, decay=0.5, delay=0.2, repeats=5):
         if self.recording is None:
             print("Nu există înregistrare pentru aplicarea efectului de echo.")
             return None
 
-        self.save_state()  # Salvează starea înainte de aplicarea efectului
+        self.save_state()
         sr = self.recording.sample_rate
         data = self.recording.data
-
-        # Calcularea numărului de eșantioane pentru delay
         delay_samples = int(delay * sr)
+        output = np.copy(data)
 
-        # Coeficienții filtrului
-        b = [1] + [0] * delay_samples + [decay]  # Numerator
-        a = [1]  # Denominator
+        for i in range(1, repeats + 1):
+            start = delay_samples * i
+            if start < len(data):
+                output[start:] += data[:-start] * (decay ** i)
 
-        # Aplicarea filtrului pentru a genera efectul de echo
-        echo_signal = lfilter(b, a, data)
-
-        # Normalizare (pentru a preveni clipping-ul)
-        max_val = np.max(np.abs(echo_signal))
+        # Normalizează pentru a evita clipping-ul
+        max_val = np.max(np.abs(output))
         if max_val > 0:
-            echo_signal = echo_signal / max_val
+            output = output / max_val * 0.95
 
-        # Actualizarea înregistrării
-        self.recording = Recording(echo_signal, sr)
+        self.recording = Recording(output, sr)
+        self.cache_state("Echo", {"decay": decay, "delay": delay, "repeats": repeats})
         return self.recording
 
-    def apply_distortion(self, gain=20.0, level=1.0):
+    def apply_distortion(self, drive=1.0, tone=0.5, mix=0.5):
         """
-        Distortion extrem: semn(x) * |x|^0.3 pentru sunet foarte agresiv.
+        Aplică efect de distorsiune cu parametri ajustabili.
+        :param drive: Nivelul de distorsiune (1.0 - 10.0)
+        :param tone: Controlul tonului (0.0 - 1.0)
+        :param mix: Amestecul între semnalul original și cel distorsionat (0.0 - 1.0)
         """
         if self.recording is None:
-            print("Nu există înregistrare pentru distortion.")
+            print("Nu există înregistrare pentru aplicarea distorsiunii.")
             return None
 
         self.save_state()
+        y = self.recording.data
+        sr = self.recording.sample_rate
 
-        y = self.recording.data * gain
-        # Funcție nonlineară foarte agresivă
-        distorted = np.sign(y) * (np.abs(y) ** 0.3)
-        # Normalizează
-        max_val = np.max(np.abs(distorted))
-        if max_val > 0:
-            distorted = distorted / max_val * level
+        # Normalizăm semnalul
+        y = y / np.max(np.abs(y))
 
-        self.recording = Recording(distorted, self.recording.sample_rate)
+        # Aplicăm drive
+        y_driven = y * drive
+
+        # Aplicăm distorsiune (soft clipping)
+        y_distorted = np.tanh(y_driven)
+
+        # Aplicăm control de ton (filtru trece-jos)
+        if tone < 1.0:
+            cutoff = int(tone * sr / 2)
+            b, a = scipy.signal.butter(4, cutoff / (sr / 2), btype='low')
+            y_distorted = scipy.signal.filtfilt(b, a, y_distorted)
+
+        # Amestecăm semnalul original cu cel distorsionat
+        y_mixed = (1 - mix) * y + mix * y_distorted
+
+        # Normalizăm rezultatul final
+        y_mixed = y_mixed / np.max(np.abs(y_mixed))
+
+        self.recording = Recording(y_mixed, sr)
+        self.cache_state("Distortion", {"drive": drive, "tone": tone, "mix": mix})
+        return self.recording
+
+    def apply_equalizer(self, bands):
+        """
+        Aplică un egalizator cu 10 benzi.
+        :param bands: Lista de 10 valori de gain în dB pentru fiecare bandă
+        """
+        if self.recording is None:
+            return None
+
+        print("\n=== Equalizer Debug Info ===")
+        print(f"Sample Rate: {self.recording.sample_rate} Hz")
+        print(f"Signal Length: {len(self.recording.data)} samples")
+
+        y = self.recording.data
+        sr = self.recording.sample_rate
+
+        # Normalizăm frecvențele în raport cu frecvența Nyquist
+        nyquist = sr / 2
+        freqs = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+        normalized_freqs = [f / nyquist for f in freqs]
+
+        print("\nFrecvențe și gain-uri:")
+        for freq, norm_freq, gain_db in zip(freqs, normalized_freqs, bands):
+            print(f"Frecvență: {freq} Hz, Normalizată: {norm_freq:.4f}, Gain: {gain_db:.1f} dB")
+
+        # Aplicăm fiecare bandă
+        y_eq = np.copy(y)
+        for i, (freq, gain_db) in enumerate(zip(normalized_freqs, bands)):
+            # Convertim gain-ul din dB în factor de multiplicare
+            gain = 10 ** (gain_db / 20)
+            print(f"\nProcesare bandă {i + 1}:")
+            print(f"Frecvență normalizată: {freq:.4f}")
+            print(f"Gain (dB): {gain_db:.1f}")
+            print(f"Factor multiplicare: {gain:.4f}")
+
+            # Creăm un filtru trece-bandă pentru fiecare frecvență
+            b, a = scipy.signal.butter(2, [freq * 0.7, freq * 1.3], btype='band')
+            filtered = scipy.signal.filtfilt(b, a, y)
+
+            # Aplicăm gain-ul și adăugăm la semnalul rezultat
+            y_eq += (filtered * (gain - 1))
+
+        # Normalizăm rezultatul
+        y_eq = np.clip(y_eq, -1, 1)
+        y_eq = y_eq / np.max(np.abs(y_eq))
+
+        print("\nStatistici semnal final:")
+        print(f"Min: {np.min(y_eq):.4f}")
+        print(f"Max: {np.max(y_eq):.4f}")
+        print(f"RMS: {np.sqrt(np.mean(y_eq ** 2)):.4f}")
+        print("========================\n")
+
+        # Salvăm starea anterioară
+        self.save_state()
+
+        # Actualizăm înregistrarea
+        self.recording.data = y_eq
+        self.cache_state("Equalizer", {"bands": bands})
         return self.recording
 
     def calculate_spectral_features(self):
@@ -234,8 +370,14 @@ class AudioService:
         y = self.recording.data
         sr = self.recording.sample_rate
         original_bpm, _ = librosa.beat.beat_track(y=y, sr=sr)
-        if isinstance(original_bpm, np.ndarray):
-            original_bpm = float(original_bpm.item())
+        # Folosim BPM-ul țintă anterior ca BPM original dacă există
+        if hasattr(self, 'last_target_bpm'):
+            original_bpm = self.last_target_bpm
+        else:
+            original_bpm, _ = librosa.beat.beat_track(y=y, sr=sr)
+            if isinstance(original_bpm, np.ndarray):
+                original_bpm = float(original_bpm.item())
+
         print("DEBUG BPM:", original_bpm, type(original_bpm))
 
         if original_bpm is None or original_bpm <= 0:
@@ -251,6 +393,9 @@ class AudioService:
             if max_val > 0:
                 y_stretched = y_stretched / max_val
             self.recording = Recording(y_stretched, sr)
+            self.cache_state("Stretch Rate", stretch_rate)
+            # Salvăm BPM-ul țintă curent pentru următorul stretch
+            self.last_target_bpm = target_bpm
             print("Time-stretching aplicat cu succes.")
         except Exception as e:
             print(f"Eroare la aplicarea time-stretching: {e}")
@@ -344,6 +489,7 @@ class AudioService:
                 out = out / max_val
 
         self.recording = Recording(out, sr)
+        self.cache_state("Compressor", {"treshold": threshold_db, "ratio": ratio, "normalize": normalize})
         return self.recording, out
 
     def apply_lowpass_filter(self, cutoff_hz=1000.0, order=5):
@@ -365,6 +511,7 @@ class AudioService:
         b, a = butter(order, normal_cutoff, btype='low', analog=False)
         filtered = lfilter(b, a, y)
         self.recording = Recording(filtered, sr)
+        self.cache_state("Filter", {"cutoff_hz": cutoff_hz, "order": order})
         return self.recording
 
     def apply_highpass_filter(self, cutoff_hz=1000.0, order=5):
@@ -386,6 +533,7 @@ class AudioService:
         b, a = butter(order, normal_cutoff, btype='high', analog=False)
         filtered = lfilter(b, a, y)
         self.recording = Recording(filtered, sr)
+        self.cache_state("Filter", {"cutoff_hz": cutoff_hz, "order": order})
         return self.recording
 
     def apply_bandpass_filter(self, lowcut_hz=300.0, highcut_hz=3000.0, order=5):
@@ -409,6 +557,7 @@ class AudioService:
         b, a = butter(order, [low, high], btype='band', analog=False)
         filtered = lfilter(b, a, y)
         self.recording = Recording(filtered, sr)
+        self.cache_state("Filter", {"lowcut": low, "highcut": high, "order": order})
         return self.recording
 
 
