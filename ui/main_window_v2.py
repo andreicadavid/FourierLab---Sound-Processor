@@ -276,28 +276,29 @@ class MainWindowV2:
             self.root.after(0, self._reset_play_ui)
 
     def stop_playback(self):
-        try:
-            # Setăm event-ul de oprire
+        """
+        Oprește redarea și înregistrarea audio.
+        """
+        # Oprim redarea
+        if self.service.is_playing:
+            sd.stop()
+            self.service.is_playing = False
+            self.is_playing = False
             self.stop_event.set()
 
-            # Oprim redarea
-            self.is_playing = False
-            self.is_paused = False
+        # Oprim înregistrarea
+        if self.service.is_recording:
+            self.service.is_recording = False
+            if self.service.recording_thread:
+                self.service.recording_thread.join()
 
-            # Oprim audio-ul
-            try:
-                sd.stop()
-            except:
-                pass
+        # Resetăm UI-ul
+        self._reset_play_ui()
+        self.status_label.config(text="Gata")
+        self.progress_var.set(0)
 
-            # Resetăm UI-ul
-            if hasattr(self, 'play_button'):
-                self.play_button.config(text="Redă")
-            if hasattr(self, 'stop_button'):
-                self.stop_button.config(state="disabled")
-
-        except Exception as e:
-            print(f"Error in stop_playback: {e}")
+        # Dezactivăm butonul de stop
+        self.stop_button.config(state="disabled")
 
     def show_loading(self, message="Se procesează..."):
         self.loading_win = tk.Toplevel(self.root)
@@ -629,10 +630,16 @@ class MainWindowV2:
             print(f"Error showing plot in tab: {e}")
 
     def show_spectral_features(self):
+        """
+        Afișează caracteristicile spectrale ale înregistrării.
+        """
         features = self.service.calculate_spectral_features()
         if features is None:
             messagebox.showinfo("Info", "Nu există înregistrare pentru calculul caracteristicilor spectrale.")
             return
+
+        # Actualizăm UI-ul cu valorile calculate
+        self.update_spectral_features_ui(features)
 
     # ------------------------------------------------------- FUNCTIONALITATI ---------------------------------------------
     def update_pitch_and_tuning_ui(self, pitch_and_tuning):
@@ -655,17 +662,28 @@ class MainWindowV2:
 
     def update_fields(self):
         """
-        Actualizează toate câmpurile din UI (caracteristici spectrale și pitch/tuning).
+        Actualizează toate câmpurile din interfață cu datele curente.
         """
-        # Calculăm caracteristicile spectrale
+        if self.service.recording is None:
+            return
+
+        # Verificăm dacă semnalul este suficient de lung pentru analiză
+        if len(self.service.recording.data) < 2048:
+            print("Semnalul este prea scurt pentru analiză.")
+            return
+
+        # Actualizăm caracteristicile spectrale
         features = self.service.calculate_spectral_features()
         if features:
             self.update_spectral_features_ui(features)
 
-        # Analizăm pitch-ul și tuning-ul
+        # Actualizăm pitch și tuning
         pitch_and_tuning = self.service.analyze_pitch_and_tuning()
         if pitch_and_tuning:
             self.update_pitch_and_tuning_ui(pitch_and_tuning)
+
+        # Actualizăm BPM
+        self.update_bpm_field()
 
     def update_bpm_field(self):
         if self.service.recording:
@@ -678,61 +696,57 @@ class MainWindowV2:
             self.bpm_entry.insert(0, f"{bpm:.2f}")
 
     def record(self):
+        """
+        Începe înregistrarea într-un thread separat.
+        """
         try:
-            self.config.sample_rate = int(self.sample_rate_entry.get())
             duration = float(self.duration_entry.get())
+            self.status_label.config(text="Se înregistrează...")
+            self.progress_var.set(0)
             self.service.record(duration)
-            self.update_plot()
-            # Actualizăm toate câmpurile relevante
-            self.update_fields()
-            self.update_bpm_field()
-            # Actualizăm durata
-            if self.service.recording:
-                duration = len(self.service.recording.data) / self.service.recording.sample_rate
-                self.update_duration(duration)
-        except Exception as e:
-            messagebox.showerror("Eroare", f"Eroare la înregistrare: {e}")
+            # Activăm butonul de stop
+            self.stop_button.config(state="normal")
+            # Înregistrarea se face în thread separat, așteptăm finalizarea
+            self.root.after(100, self._check_recording_status)
+        except ValueError:
+            messagebox.showerror("Eroare", "Durata trebuie să fie un număr valid.")
+            self.status_label.config(text="Gata")
+
+    def _check_recording_status(self):
+        """
+        Verifică statusul înregistrării și actualizează interfața.
+        """
+        if self.service.is_recording:
+            self.root.after(100, self._check_recording_status)
+        else:
+            self.status_label.config(text="Gata")
+            self._on_recording_loaded()
 
     def play(self):
+        """
+        Redă audio-ul într-un thread separat.
+        """
         if not self.service.recording:
-            messagebox.showinfo("Info", "Nu există înregistrare pentru redare.")
+            messagebox.showwarning("Avertisment", "Nu există înregistrare pentru redare.")
             return
 
-        try:
-            if not self.is_playing:
-                # Start playback
-                self.is_playing = True
-                self.is_paused = False
-                self.stop_event.clear()
+        self.status_label.config(text="Se redă...")
+        self.progress_var.set(0)
+        self.is_playing = True
+        self.stop_button.config(state="normal")  # Activăm butonul de stop
+        self.service.play()
+        # Redarea se face în thread separat, așteptăm finalizarea
+        self.root.after(100, self._check_playback_status)
 
-                if hasattr(self, 'play_button'):
-                    self.play_button.config(text="Pause")
-                if hasattr(self, 'stop_button'):
-                    self.stop_button.config(state="normal")
-
-                # Pornim un nou thread pentru redare
-                self.playback_thread = threading.Thread(target=self._play_audio_thread, daemon=True)
-                self.playback_thread.start()
-            else:
-                # Toggle pause
-                self.is_paused = not self.is_paused
-                if self.is_paused:
-                    if hasattr(self, 'play_button'):
-                        self.play_button.config(text="Redă")
-                    self.stop_event.set()
-                    try:
-                        sd.stop()
-                    except:
-                        pass
-                else:
-                    if hasattr(self, 'play_button'):
-                        self.play_button.config(text="Pause")
-                    self.stop_event.clear()
-                    self.playback_thread = threading.Thread(target=self._play_audio_thread, daemon=True)
-                    self.playback_thread.start()
-        except Exception as e:
-            print(f"Error in play: {e}")
-            messagebox.showerror("Eroare", f"Eroare la redare: {e}")
+    def _check_playback_status(self):
+        """
+        Verifică statusul redării și actualizează interfața.
+        """
+        if self.service.is_playing:
+            self.root.after(100, self._check_playback_status)
+        else:
+            self.status_label.config(text="Gata")
+            self._reset_play_ui()
 
     def _reset_play_ui(self):
         try:
@@ -776,15 +790,32 @@ class MainWindowV2:
         ttk.Button(win, text="Save", command=save).grid(row=2, column=1, pady=10)
 
     def save_recording(self):
-        if self.service.recording:
-            initial = self.config.save_directory or os.getcwd()
-            path = filedialog.asksaveasfilename(initialdir=initial, defaultextension=".wav",
-                                                filetypes=[("WAV files", "*.wav")])
-            if path:
-                self.config.save_directory = os.path.dirname(path)
-                AudioRepository.save(self.service.recording, path)
+        """
+        Salvează înregistrarea într-un thread separat.
+        """
+        if not self.service.recording:
+            messagebox.showwarning("Avertisment", "Nu există înregistrare de salvat.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".wav",
+            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.status_label.config(text="Se salvează...")
+            self.progress_var.set(0)
+            self.service.save_recording(file_path)
+            # Salvarea se face în thread separat, așteptăm finalizarea
+            self.root.after(100, self._check_saving_status)
+
+    def _check_saving_status(self):
+        """
+        Verifică statusul salvării și actualizează interfața.
+        """
+        if self.service.is_saving:
+            self.root.after(100, self._check_saving_status)
         else:
-            messagebox.showinfo("Info", "Nu există înregistrare.")
+            self.status_label.config(text="Gata")
 
     def _on_recording_loaded(self):
         """
@@ -793,35 +824,34 @@ class MainWindowV2:
         self.update_plot()
         self.update_fields()
         self.update_bpm_field()
-        # Actualizăm durata
-        if self.service.recording:
-            duration = len(self.service.recording.data) / self.service.recording.sample_rate
-            self.update_duration(duration)
+        self.show_spectral_features()
+        pitch_and_tuning = self.service.analyze_pitch_and_tuning()
+        if pitch_and_tuning:
+            self.update_pitch_and_tuning_ui(pitch_and_tuning)
 
     def load_recording(self):
-        initial = self.config.save_directory or os.getcwd()
-        path = filedialog.askopenfilename(initialdir=initial, filetypes=[("WAV files", "*.wav")])
-        if not path:
-            return  # utilizatorul a anulat
+        """
+        Încarcă un fișier audio într-un thread separat.
+        """
+        file_path = filedialog.askopenfilename(
+            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.status_label.config(text="Se încarcă fișierul...")
+            self.progress_var.set(0)
+            self.service.load_audio(file_path)
+            # Încărcarea se face în thread separat, așteptăm finalizarea
+            self.root.after(100, self._check_loading_status)
 
-        # 1. Pornește animația de loading
-        self.show_loading("Se încarcă fișierul...")
-
-        def task():
-            try:
-                success = self.service.load_audio(path)
-                if success:
-                    self.config.save_directory = os.path.dirname(path)
-                    self.root.after(0, self._on_recording_loaded)
-                else:
-                    self.root.after(0, lambda: messagebox.showerror("Eroare", "Nu s-a putut încărca fișierul."))
-            except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Eroare", f"Eroare la încărcare: {e}"))
-            finally:
-                self.root.after(0, self.hide_loading)
-
-        # 2. Rulează task-ul pe un thread separat
-        threading.Thread(target=task, daemon=True).start()
+    def _check_loading_status(self):
+        """
+        Verifică statusul încărcării și actualizează interfața.
+        """
+        if self.service.is_loading:
+            self.root.after(100, self._check_loading_status)
+        else:
+            self.status_label.config(text="Gata")
+            self._on_recording_loaded()
 
     def start_playback_ui(self):
         self.is_playing = True
@@ -860,7 +890,7 @@ class MainWindowV2:
 
             def task():
                 try:
-                    self.service.apply_reverb_with_ir_chunked("C:/Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav")
+                    self.service.apply_reverb_with_ir("C:\Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav")
                     self.root.after(0, self.on_reverb_done)
                 except Exception as e:
                     messagebox.showerror("Eroare", f"Eroare la reverb: {e}")
@@ -884,20 +914,36 @@ class MainWindowV2:
         try:
             bpm = float(self.bpm_entry.get())
             if bpm <= 0:
-                raise ValueError
+                raise ValueError("BPM trebuie să fie un număr pozitiv.")
+
+            self.status_label.config(text="Se aplică time stretch...")
+            self.progress_var.set(0)
+
+            # Aplicăm time stretch
             self.service.apply_time_stretch_bpm(bpm)
+
+            # Actualizăm interfața
             self.update_plot()
             self.play()
             self.update_fields()
+
             # Actualizăm câmpul BPM cu noul BPM țintă
             self.bpm_entry.delete(0, tk.END)
             self.bpm_entry.insert(0, f"{bpm:.2f}")
+
             # Actualizăm durata
             if self.service.recording:
                 duration = len(self.service.recording.data) / self.service.recording.sample_rate
                 self.update_duration(duration)
-        except ValueError:
-            messagebox.showerror("Error", "Please enter a valid positive BPM.")
+
+            self.status_label.config(text="Time stretch aplicat")
+
+        except ValueError as e:
+            messagebox.showerror("Eroare", str(e))
+            self.status_label.config(text="Gata")
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la aplicarea time stretch: {e}")
+            self.status_label.config(text="Gata")
 
     def apply_echo(self):
         """
@@ -1029,7 +1075,7 @@ class MainWindowV2:
         tone_frame.pack(fill="x", pady=5)
         ttk.Label(tone_frame, text="Tone (0-1)").pack()
         tone_var = tk.DoubleVar(value=0.5)
-        tone_slider = ttk.Scale(tone_frame, from_=0.0, to=1.0, variable=tone_var, orient="horizontal")
+        tone_slider = ttk.Scale(tone_frame, from_=0.0, to=1.0, variable=tone_var, orient="horizontal", length=200)
         tone_slider.pack(fill="x", padx=10)
         tone_value_label = ttk.Label(tone_frame, text="0.50")
         tone_value_label.pack()
@@ -1220,20 +1266,20 @@ class MainWindowV2:
 
     def update_progress(self, value):
         """
-        Actualizează bara de progres și statusul.
+        Actualizează bara de progres.
         """
         self.progress_var.set(value)
-        self.status_label.config(text=f"Procesare: {value:.1f}%")
         self.root.update_idletasks()
 
     def update_duration(self, duration):
         """
-        Actualizează câmpul de durată din interfață.
+        Actualizează durata afișată în interfață.
         :param duration: Durata în secunde
         """
         try:
             self.duration_entry.delete(0, tk.END)
             self.duration_entry.insert(0, f"{duration:.2f}")
+            self.status_label.config(text=f"Durată: {duration:.2f} secunde")
             self.root.update_idletasks()  # Forțăm actualizarea UI-ului
         except Exception as e:
             print(f"Error updating duration: {e}")
