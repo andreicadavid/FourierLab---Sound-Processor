@@ -14,6 +14,7 @@ from service.audio_service import AudioService
 from repo.audio_repo import AudioRepository
 from domain.config import Config
 
+
 class MainWindowV2:
     def __init__(self, root):
         self.root = root
@@ -22,6 +23,15 @@ class MainWindowV2:
 
         self.config = Config()
         self.service = AudioService(self.config)
+        self.service.set_progress_callback(self.update_progress)
+        # Setăm callback-ul pentru actualizarea duratei
+        self.service.set_duration_callback(self.update_duration)
+
+        # Variabile pentru controlul redării
+        self.is_playing = False
+        self.is_paused = False
+        self.playback_thread = None
+        self.stop_event = threading.Event()
 
         self.setup_menu()
         self.setup_ui()
@@ -47,126 +57,182 @@ class MainWindowV2:
 
     def setup_ui(self):
         style = ttk.Style()
-        style.configure("TButton", font=("Helvetica", 12))
+        style.configure("TButton", font=("Helvetica", 10))
+        style.configure("TLabel", font=("Helvetica", 10))
 
-        # Cadrul principal
-        frame = ttk.Frame(self.root)
-        frame.pack(padx=10, pady=10)
-
-        # Sub-cadre pentru coloane
-        left_frame = ttk.Frame(frame)
-        left_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
-
-        right_frame = ttk.Frame(frame)
-        right_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
-
-        # --- Coloana stângă: Setări generale ---
-        ttk.Label(left_frame, text="Durată (secunde):").grid(row=0, column=0, sticky="e", padx=5, pady=5)
-        self.duration_entry = ttk.Entry(left_frame)
-        self.duration_entry.grid(row=0, column=1, padx=5, pady=5)
+        # Inițializăm variabilele pentru entry-uri cu valorile default
+        self.duration_entry = ttk.Entry()
         self.duration_entry.insert(0, "5")
 
-        ttk.Label(left_frame, text="Sample Rate:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
-        self.sample_rate_entry = ttk.Entry(left_frame)
-        self.sample_rate_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.sample_rate_entry = ttk.Entry()
         self.sample_rate_entry.insert(0, str(self.config.sample_rate))
 
-        ttk.Label(left_frame, text="Decay (0-1):").grid(row=2, column=0, sticky="e", padx=5, pady=5)
-        self.decay_entry = ttk.Entry(left_frame)
-        self.decay_entry.grid(row=2, column=1, padx=5, pady=5)
+        self.decay_entry = ttk.Entry()
         self.decay_entry.insert(0, "0.5")
 
-        ttk.Label(left_frame, text="Delay (secunde):").grid(row=3, column=0, sticky="e", padx=5, pady=5)
-        self.delay_entry = ttk.Entry(left_frame)
-        self.delay_entry.grid(row=3, column=1, padx=5, pady=5)
+        self.delay_entry = ttk.Entry()
         self.delay_entry.insert(0, "0.02")
 
-        ttk.Label(left_frame, text="IR Duration (secunde):").grid(row=4, column=0, sticky="e", padx=5, pady=5)
-        self.ir_duration_entry = ttk.Entry(left_frame)
-        self.ir_duration_entry.grid(row=4, column=1, padx=5, pady=5)
+        self.ir_duration_entry = ttk.Entry()
         self.ir_duration_entry.insert(0, "0.5")
 
-        # --- Coloana dreaptă: Caracteristici spectrale ---
-        ttk.Label(right_frame, text="Spectral Centroid:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        # Inițializăm variabilele pentru caracteristici spectrale
         self.spectral_centroid_var = tk.StringVar()
-        self.spectral_centroid_entry = ttk.Entry(right_frame, textvariable=self.spectral_centroid_var, state="readonly")
-        self.spectral_centroid_entry.grid(row=0, column=1, padx=5, pady=5)
-
-        ttk.Label(right_frame, text="Spectral Bandwidth:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
         self.spectral_bandwidth_var = tk.StringVar()
-        self.spectral_bandwidth_entry = ttk.Entry(right_frame, textvariable=self.spectral_bandwidth_var, state="readonly")
-        self.spectral_bandwidth_entry.grid(row=1, column=1, padx=5, pady=5)
-
-        ttk.Label(right_frame, text="Spectral Rolloff:").grid(row=2, column=0, sticky="e", padx=5, pady=5)
         self.spectral_rolloff_var = tk.StringVar()
-        self.spectral_rolloff_entry = ttk.Entry(right_frame, textvariable=self.spectral_rolloff_var, state="readonly")
-        self.spectral_rolloff_entry.grid(row=2, column=1, padx=5, pady=5)
-
-        ttk.Label(right_frame, text="Spectral Contrast:").grid(row=3, column=0, sticky="e", padx=5, pady=5)
         self.spectral_contrast_var = tk.StringVar()
-        self.spectral_contrast_entry = ttk.Entry(right_frame, textvariable=self.spectral_contrast_var, state="readonly")
-        self.spectral_contrast_entry.grid(row=3, column=1, padx=5, pady=5)
-
-        ttk.Label(right_frame, text="Pitch Fundamental (Hz):").grid(row=4, column=0, sticky="e", padx=5, pady=5)
         self.pitch_var = tk.StringVar()
-        self.pitch_entry = ttk.Entry(right_frame, textvariable=self.pitch_var, state="readonly")
-        self.pitch_entry.grid(row=4, column=1, padx=5, pady=5)
-
-        ttk.Label(right_frame, text="Tuning Adjustment (semitone):").grid(row=5, column=0, sticky="e", padx=5, pady=5)
         self.tuning_var = tk.StringVar()
-        self.tuning_entry = ttk.Entry(right_frame, textvariable=self.tuning_var, state="readonly")
-        self.tuning_entry.grid(row=5, column=1, padx=5, pady=5)
 
-        # --- Buttons: grupare pe rânduri și categorii ---
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(padx=10, pady=5)
+        # Inițializăm variabilele pentru BPM
+        self.bpm_entry = ttk.Entry()
 
-        # Rând 0: Înregistrare, redare, salvare, undo
-        ttk.Button(btn_frame, text="Înregistrează", command=self.record).grid(row=0, column=0, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Redă", command=self.play).grid(row=0, column=1, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Salvează", command=self.save_recording).grid(row=0, column=2, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Încarcă", command=self.load_recording).grid(row=0, column=3, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Undo", command=self.undo).grid(row=0, column=4, padx=5, pady=5)
+        # Cadrul principal
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # Rând 1: Efecte audio
-        ttk.Button(btn_frame, text="Pitch Up", command=self.pitch_up).grid(row=1, column=0, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Pitch Down", command=self.pitch_down).grid(row=1, column=1, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Aplică Reverb", command=self.apply_reverb).grid(row=1, column=2, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Aplică Echo", command=self.apply_echo).grid(row=1, column=3, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Aplică Compressor", command=self.apply_compressor).grid(row=1, column=4, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Distortion", command=self.show_distortion_dialog).grid(row=1, column=5, padx=5,
-                                                                                           pady=5)
-        ttk.Button(btn_frame, text="Equalizer", command=self.show_equalizer_dialog).grid(row=1, column=6, padx=5,
-                                                                                         pady=5)
+        # Frame pentru progres și status
+        status_frame = ttk.Frame(main_frame)
+        status_frame.pack(fill="x", padx=5, pady=2)
 
-        # Rând 3: Filtre DSP
-        ttk.Label(btn_frame, text="Filtre DSP:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
-        ttk.Button(btn_frame, text="LPF", command=self.apply_lpf).grid(row=3, column=1, padx=5, pady=5)
-        ttk.Button(btn_frame, text="HPF", command=self.apply_hpf).grid(row=3, column=2, padx=5, pady=5)
-        ttk.Button(btn_frame, text="BPF", command=self.apply_bpf).grid(row=3, column=3, padx=5, pady=5)
+        # Bară de progres
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(status_frame, length=300, mode='determinate', variable=self.progress_var)
+        self.progress_bar.pack(fill="x", padx=5, pady=2)
 
-        #Redare/Pause
-        self.is_playing = False
-        self.is_paused = False
+        # Label pentru status
+        self.status_label = ttk.Label(status_frame, text="Gata")
+        self.status_label.pack(fill="x", padx=5, pady=2)
 
-        self.play_button = ttk.Button(btn_frame, text="Redă", command=self.toggle_play_pause)
-        self.play_button.grid(row=0, column=1, padx=5, pady=5)
-        self.stop_button = ttk.Button(btn_frame, text="Stop", command=self.stop_playback)
-        self.stop_button.grid(row=0, column=6, padx=5, pady=5)  # sau altă poziție liberă
-        style = ttk.Style()
-        style.configure("Red.TButton", foreground="white", background="red")
+        # Frame pentru controale (deasupra ploturilor)
+        controls_frame = ttk.Frame(main_frame)
+        controls_frame.pack(fill="x", padx=5, pady=5)
 
-        # --- Time-stretch (poate fi sub butoane, nu în grid) ---
-        self.bpm_label = tk.Label(self.root, text="Target BPM:")
-        self.bpm_label.pack()
-        self.bpm_entry = tk.Entry(self.root)
-        self.bpm_entry.pack()
-        self.bpm_button = tk.Button(self.root, text="Apply Stretch", command=self.apply_time_stretch)
-        self.bpm_button.pack(pady=5)
+        # Frame pentru ploturi (50% din înălțime)
+        plots_frame = ttk.Frame(main_frame)
+        plots_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # --- Notebook pentru ploturi (footer cu file) ---
-        self.plot_notebook = ttk.Notebook(self.root)
-        self.plot_notebook.pack(side="bottom", fill="both", expand=True, padx=10, pady=10)
+        # --- Controale în 3 coloane ---
+        # Frame pentru cele 3 coloane
+        columns_frame = ttk.Frame(controls_frame)
+        columns_frame.pack(fill="x", padx=5, pady=5)
+
+        # Coloana 1: Setări
+        settings_frame = ttk.LabelFrame(columns_frame, text="Setări", padding=5)
+        settings_frame.pack(side="left", fill="both", expand=True, padx=5)
+
+        # Setări generale
+        for label, default_value in [
+            ("Durată (sec):", "5"),
+            ("Sample Rate:", str(self.config.sample_rate)),
+            ("Decay (0-1):", "0.5"),
+            ("Delay (sec):", "0.02"),
+            ("IR Duration:", "0.5")
+        ]:
+            frame = ttk.Frame(settings_frame)
+            frame.pack(fill="x", padx=2, pady=2)
+            ttk.Label(frame, text=label).pack(side="left", padx=2)
+            entry = ttk.Entry(frame)
+            entry.insert(0, default_value)
+            entry.pack(side="right", fill="x", expand=True, padx=2)
+
+            # Salvăm referința la entry în variabila corespunzătoare
+            if label == "Durată (sec):":
+                self.duration_entry = entry
+            elif label == "Sample Rate:":
+                self.sample_rate_entry = entry
+            elif label == "Decay (0-1):":
+                self.decay_entry = entry
+            elif label == "Delay (sec):":
+                self.delay_entry = entry
+            elif label == "IR Duration:":
+                self.ir_duration_entry = entry
+
+        # Separator
+        ttk.Separator(settings_frame, orient="horizontal").pack(fill="x", padx=5, pady=5)
+
+        # Time Stretch settings
+        frame = ttk.Frame(settings_frame)
+        frame.pack(fill="x", padx=2, pady=2)
+        ttk.Label(frame, text="Target BPM:").pack(side="left", padx=2)
+        self.bpm_entry = ttk.Entry(frame)
+        self.bpm_entry.pack(side="left", fill="x", expand=True, padx=2)
+        ttk.Button(frame, text="Apply", command=self.apply_time_stretch).pack(side="right", padx=2)
+
+        # Coloana 2: Caracteristici spectrale
+        spectral_frame = ttk.LabelFrame(columns_frame, text="Caracteristici spectrale", padding=5)
+        spectral_frame.pack(side="left", fill="both", expand=True, padx=5)
+
+        for label, var in [
+            ("Spectral Centroid:", self.spectral_centroid_var),
+            ("Spectral Bandwidth:", self.spectral_bandwidth_var),
+            ("Spectral Rolloff:", self.spectral_rolloff_var),
+            ("Spectral Contrast:", self.spectral_contrast_var),
+            ("Pitch (Hz):", self.pitch_var),
+            ("Tuning (semitone):", self.tuning_var)
+        ]:
+            frame = ttk.Frame(spectral_frame)
+            frame.pack(fill="x", padx=2, pady=2)
+            ttk.Label(frame, text=label).pack(side="left", padx=2)
+            ttk.Entry(frame, textvariable=var, state="readonly").pack(side="right", fill="x", expand=True, padx=2)
+
+        # Coloana 3: Butoane
+        buttons_frame = ttk.LabelFrame(columns_frame, text="Controale", padding=5)
+        buttons_frame.pack(side="left", fill="both", expand=True, padx=5)
+
+        # Butoane principale
+        self.play_button = ttk.Button(buttons_frame, text="Redă", command=self.play)
+        self.play_button.pack(fill="x", padx=2, pady=2)
+
+        self.stop_button = ttk.Button(buttons_frame, text="Stop", command=self.stop_playback, state="disabled")
+        self.stop_button.pack(fill="x", padx=2, pady=2)
+
+        for text, command in [
+            ("Înregistrează", self.record),
+            ("Salvează", self.save_recording),
+            ("Încarcă", self.load_recording),
+            ("Undo", self.undo)
+        ]:
+            ttk.Button(buttons_frame, text=text, command=command).pack(fill="x", padx=2, pady=2)
+
+        # --- Efecte și filtre ---
+        effects_filters_frame = ttk.Frame(controls_frame)
+        effects_filters_frame.pack(fill="x", padx=5, pady=5)
+
+        # Efecte
+        effects_frame = ttk.LabelFrame(effects_filters_frame, text="Efecte", padding=5)
+        effects_frame.pack(side="left", fill="x", expand=True, padx=5)
+
+        effects = [
+            ("Pitch Up", self.pitch_up),
+            ("Pitch Down", self.pitch_down),
+            ("Reverb", self.apply_reverb),
+            ("Echo", self.apply_echo),
+            ("Compressor", self.show_compressor_dialog),
+            ("Test Compressor", self.test_compressor),
+            ("Distortion", self.show_distortion_dialog),
+            ("Equalizer", self.show_equalizer_dialog)
+        ]
+
+        for text, command in effects:
+            ttk.Button(effects_frame, text=text, command=command).pack(side="left", padx=2, pady=2)
+
+        # Filtre
+        filters_frame = ttk.LabelFrame(effects_filters_frame, text="Filtre DSP", padding=5)
+        filters_frame.pack(side="left", fill="x", expand=True, padx=5)
+
+        filters = [
+            ("LPF", self.apply_lpf),
+            ("HPF", self.apply_hpf),
+            ("BPF", self.apply_bpf)
+        ]
+
+        for text, command in filters:
+            ttk.Button(filters_frame, text=text, command=command).pack(side="left", padx=2, pady=2)
+
+        # --- Notebook pentru ploturi ---
+        self.plot_notebook = ttk.Notebook(plots_frame)
+        self.plot_notebook.pack(fill="both", expand=True)
 
         # Tab-uri pentru fiecare tip de plot
         self.waveform_tab = ttk.Frame(self.plot_notebook)
@@ -191,34 +257,47 @@ class MainWindowV2:
         self.waveform_canvas.get_tk_widget().pack(fill="both", expand=True)
         self.update_plot()  # Desenează waveform-ul inițial
 
-    def toggle_play_pause(self):
-        if not self.is_playing:
-            self.is_playing = True
-            self.is_paused = False
-            self.play_button.config(text="Pause", style="Red.TButton")
-            self.stop_button.config(state="normal")
-            # Pornește redarea pe thread separat dacă vrei să nu blochezi UI-ul
-            threading.Thread(target=self._play_audio, daemon=True).start()
-        else:
-            self.is_paused = not self.is_paused
-            if self.is_paused:
-                self.play_button.config(text="Redă", style="TButton")
-                sd.stop()
-            else:
-                self.play_button.config(text="Pause", style="Red.TButton")
-                threading.Thread(target=self._play_audio, daemon=True).start()
+    def _play_audio_thread(self):
+        try:
+            if self.service.recording is None:
+                return
 
-    def _play_audio(self):
-        self.service.play()
-        # Când redarea s-a terminat, resetează UI-ul (execută pe thread-ul principal)
-        self.root.after(0, self._reset_play_ui)
+            # Redăm audio-ul
+            self.service.play()
+
+            # Așteptăm finalizarea redării sau oprirea
+            while not self.stop_event.is_set() and sd.get_stream().active:
+                sd.wait(100)  # Verificăm la fiecare 100ms
+
+        except Exception as e:
+            print(f"Error in playback: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Eroare", f"Eroare la redare: {e}"))
+        finally:
+            self.root.after(0, self._reset_play_ui)
 
     def stop_playback(self):
-        self.is_playing = False
-        self.is_paused = False
-        self.play_button.config(text="Redă", style="TButton")
-        self.stop_button.config(state="disabled")
-        sd.stop()
+        try:
+            # Setăm event-ul de oprire
+            self.stop_event.set()
+
+            # Oprim redarea
+            self.is_playing = False
+            self.is_paused = False
+
+            # Oprim audio-ul
+            try:
+                sd.stop()
+            except:
+                pass
+
+            # Resetăm UI-ul
+            if hasattr(self, 'play_button'):
+                self.play_button.config(text="Redă")
+            if hasattr(self, 'stop_button'):
+                self.stop_button.config(state="disabled")
+
+        except Exception as e:
+            print(f"Error in stop_playback: {e}")
 
     def show_loading(self, message="Se procesează..."):
         self.loading_win = tk.Toplevel(self.root)
@@ -283,7 +362,7 @@ class MainWindowV2:
         # Sari la starea selectată la dublu-click
         listbox.bind("<Double-Button-1>", on_select)
 
-        # Buton explicit de „Jump”
+        # Buton explicit de "Jump"
         def jump():
             selection = listbox.curselection()
             if selection:
@@ -297,92 +376,103 @@ class MainWindowV2:
         tk.Button(panel, text="Jump to Selected", command=jump).pack(pady=5)
 
     def update_plot(self):
-        if self.service.recording:
-            # Waveform
-            self.ax.clear()
-            self.ax.plot(self.service.recording.data)
-            self.ax.set_title("Semnal audio")
-            self.ax.set_xlabel("Eșantion")
-            self.ax.set_ylabel("Amplitudine")
-            self.ax.grid(True)
-            self.waveform_canvas.draw()
-            # Nu schimba tab-ul activ!
+        try:
+            if self.service.recording:
+                # Waveform
+                self.ax.clear()
+                self.ax.plot(self.service.recording.data)
+                self.ax.set_title("Semnal audio")
+                self.ax.set_xlabel("Eșantion")
+                self.ax.set_ylabel("Amplitudine")
+                self.ax.grid(True)
+                self.waveform_canvas.draw()
+                # Nu schimba tab-ul activ!
 
-            # Actualizează toate celelalte ploturi
-            self._update_all_plots()
+                # Actualizează toate celelalte ploturi
+                self._update_all_plots()
+        except Exception as e:
+            print(f"Error updating plot: {e}")
 
     def _update_all_plots(self):
-        # Spectrogramă
         try:
+            if not self.service.recording:
+                return
+
             y = self.service.recording.data
             sr = self.service.recording.sample_rate
-            D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
-            fig, ax = plt.subplots(figsize=(8, 4))
-            img = librosa.display.specshow(D, sr=sr, x_axis='time', y_axis='log', ax=ax)
-            ax.set_title('Spectrograma')
-            fig.colorbar(img, ax=ax, format='%+2.0f dB')
-            self._show_plot_in_tab(fig, self.spectrogram_tab)
-        except Exception:
-            pass
 
-        # Chroma
-        try:
-            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
-            fig, ax = plt.subplots(figsize=(8, 4))
-            img = librosa.display.specshow(chroma, y_axis='chroma', x_axis='time', ax=ax)
-            ax.set_title('Chroma')
-            fig.colorbar(img, ax=ax)
-            self._show_plot_in_tab(fig, self.chroma_tab)
-        except Exception:
-            pass
+            # Spectrogramă
+            try:
+                D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
+                fig, ax = plt.subplots(figsize=(8, 4))
+                img = librosa.display.specshow(D, sr=sr, x_axis='time', y_axis='log', ax=ax)
+                ax.set_title('Spectrograma')
+                fig.colorbar(img, ax=ax, format='%+2.0f dB')
+                self._show_plot_in_tab(fig, self.spectrogram_tab)
+            except Exception as e:
+                print(f"Error updating spectrogram: {e}")
 
-        # Mel Spectrogram
-        try:
-            mel_spec_db, _ = self.service.generate_mel_spectrogram()
-            fig, ax = plt.subplots(figsize=(8, 4))
-            img = librosa.display.specshow(mel_spec_db, sr=sr, x_axis='time', y_axis='mel', ax=ax, cmap='viridis')
-            ax.set_title("Mel Spectrogram")
-            fig.colorbar(img, ax=ax, format='%+2.0f dB')
-            self._show_plot_in_tab(fig, self.mel_tab)
-        except Exception:
-            pass
+            # Chroma
+            try:
+                chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+                fig, ax = plt.subplots(figsize=(8, 4))
+                img = librosa.display.specshow(chroma, y_axis='chroma', x_axis='time', ax=ax)
+                ax.set_title('Chroma')
+                fig.colorbar(img, ax=ax)
+                self._show_plot_in_tab(fig, self.chroma_tab)
+            except Exception as e:
+                print(f"Error updating chroma: {e}")
 
-        # MFCC
-        try:
-            mfcc, _ = self.service.generate_mfcc()
-            fig, ax = plt.subplots(figsize=(8, 4))
-            img = librosa.display.specshow(mfcc, sr=sr, x_axis='time', ax=ax, cmap='coolwarm')
-            ax.set_title("MFCC (Mel Frequency Cepstral Coefficients)")
-            fig.colorbar(img, ax=ax, format='%+2.0f dB')
-            self._show_plot_in_tab(fig, self.mfcc_tab)
-        except Exception:
-            pass
+            # Mel Spectrogram
+            try:
+                mel_spec_db, _ = self.service.generate_mel_spectrogram()
+                fig, ax = plt.subplots(figsize=(8, 4))
+                img = librosa.display.specshow(mel_spec_db, sr=sr, x_axis='time', y_axis='mel', ax=ax, cmap='viridis')
+                ax.set_title("Mel Spectrogram")
+                fig.colorbar(img, ax=ax, format='%+2.0f dB')
+                self._show_plot_in_tab(fig, self.mel_tab)
+            except Exception as e:
+                print(f"Error updating mel spectrogram: {e}")
 
-        # CQT
-        try:
-            cqt_db, _ = self.service.generate_cqt()
-            fig, ax = plt.subplots(figsize=(8, 4))
-            img = librosa.display.specshow(cqt_db, sr=sr, x_axis='time', y_axis='cqt_note', ax=ax, cmap='coolwarm')
-            ax.set_title("Constant-Q Transform (CQT)")
-            fig.colorbar(img, ax=ax, format='%+2.0f dB')
-            self._show_plot_in_tab(fig, self.cqt_tab)
-        except Exception:
-            pass
+            # MFCC
+            try:
+                mfcc, _ = self.service.generate_mfcc()
+                fig, ax = plt.subplots(figsize=(8, 4))
+                img = librosa.display.specshow(mfcc, sr=sr, x_axis='time', ax=ax, cmap='coolwarm')
+                ax.set_title("MFCC (Mel Frequency Cepstral Coefficients)")
+                fig.colorbar(img, ax=ax, format='%+2.0f dB')
+                self._show_plot_in_tab(fig, self.mfcc_tab)
+            except Exception as e:
+                print(f"Error updating MFCC: {e}")
 
-        # Onsets
-        try:
-            onset_frames = librosa.onset.onset_detect(y=y, sr=sr)
-            onset_times = librosa.frames_to_time(onset_frames, sr=sr)
-            fig, ax = plt.subplots(figsize=(8, 4))
-            librosa.display.waveshow(y, sr=sr, ax=ax, alpha=0.6)
-            ax.vlines(onset_times, ymin=min(y), ymax=max(y), color='r', linestyle='--', label='Onsets')
-            ax.set_title("Formă de undă cu Onsets")
-            ax.set_xlabel("Timp (secunde)")
-            ax.set_ylabel("Amplitudine")
-            ax.legend()
-            self._show_plot_in_tab(fig, self.onset_tab)
-        except Exception:
-            pass
+            # CQT
+            try:
+                cqt_db, _ = self.service.generate_cqt()
+                fig, ax = plt.subplots(figsize=(8, 4))
+                img = librosa.display.specshow(cqt_db, sr=sr, x_axis='time', y_axis='cqt_note', ax=ax, cmap='coolwarm')
+                ax.set_title("Constant-Q Transform (CQT)")
+                fig.colorbar(img, ax=ax, format='%+2.0f dB')
+                self._show_plot_in_tab(fig, self.cqt_tab)
+            except Exception as e:
+                print(f"Error updating CQT: {e}")
+
+            # Onsets
+            try:
+                onset_frames = librosa.onset.onset_detect(y=y, sr=sr)
+                onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+                fig, ax = plt.subplots(figsize=(8, 4))
+                librosa.display.waveshow(y, sr=sr, ax=ax, alpha=0.6)
+                ax.vlines(onset_times, ymin=min(y), ymax=max(y), color='r', linestyle='--', label='Onsets')
+                ax.set_title("Formă de undă cu Onsets")
+                ax.set_xlabel("Timp (secunde)")
+                ax.set_ylabel("Amplitudine")
+                ax.legend()
+                self._show_plot_in_tab(fig, self.onset_tab)
+            except Exception as e:
+                print(f"Error updating onsets: {e}")
+
+        except Exception as e:
+            print(f"Error in _update_all_plots: {e}")
 
     def export_onsets_ui(self):
         if self.service.recording is None:
@@ -438,7 +528,7 @@ class MainWindowV2:
 
     def generate_spectrogram(self):
         if self.service.recording is None:
-            messagebox.showinfo("Info","Nu există înregistrare pentru spectrogramă.")
+            messagebox.showinfo("Info", "Nu există înregistrare pentru spectrogramă.")
             return
         y = self.service.recording.data
         sr = self.service.recording.sample_rate
@@ -452,7 +542,7 @@ class MainWindowV2:
 
     def generate_chroma(self):
         if self.service.recording is None:
-            messagebox.showinfo("Info","Nu există înregistrare pentru chroma.")
+            messagebox.showinfo("Info", "Nu există înregistrare pentru chroma.")
             return
         y = self.service.recording.data
         sr = self.service.recording.sample_rate
@@ -528,12 +618,15 @@ class MainWindowV2:
         self.plot_notebook.select(self.onset_tab)
 
     def _show_plot_in_tab(self, fig, tab):
-        for widget in tab.winfo_children():
-            widget.destroy()
-        canvas = FigureCanvasTkAgg(fig, master=tab)
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        canvas.draw()
-        plt.close(fig)
+        try:
+            for widget in tab.winfo_children():
+                widget.destroy()
+            canvas = FigureCanvasTkAgg(fig, master=tab)
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+            canvas.draw()
+            plt.close(fig)
+        except Exception as e:
+            print(f"Error showing plot in tab: {e}")
 
     def show_spectral_features(self):
         features = self.service.calculate_spectral_features()
@@ -541,7 +634,7 @@ class MainWindowV2:
             messagebox.showinfo("Info", "Nu există înregistrare pentru calculul caracteristicilor spectrale.")
             return
 
-#------------------------------------------------------- FUNCTIONALITATI ---------------------------------------------
+    # ------------------------------------------------------- FUNCTIONALITATI ---------------------------------------------
     def update_pitch_and_tuning_ui(self, pitch_and_tuning):
         """
         Actualizează câmpurile text din UI cu valorile pitch-ului și tuning-ului.
@@ -593,45 +686,66 @@ class MainWindowV2:
             # Actualizăm toate câmpurile relevante
             self.update_fields()
             self.update_bpm_field()
+            # Actualizăm durata
+            if self.service.recording:
+                duration = len(self.service.recording.data) / self.service.recording.sample_rate
+                self.update_duration(duration)
         except Exception as e:
             messagebox.showerror("Eroare", f"Eroare la înregistrare: {e}")
-
-    import threading
-    import sounddevice as sd
 
     def play(self):
         if not self.service.recording:
             messagebox.showinfo("Info", "Nu există înregistrare pentru redare.")
             return
 
-        # Actualizează UI-ul instant
-        self.is_playing = True
-        self.is_paused = False
-        self.play_button.config(text="Pause", style="Red.TButton")
-        self.stop_button.config(state="normal")
-
-        # Pornește redarea pe thread separat
-        threading.Thread(target=self._play_audio_thread, daemon=True).start()
-
-    def _play_audio_thread(self):
         try:
-            self.service.play()  # sau direct sd.play(...), dacă vrei
-            # Afișează istoricul cache-ului după ce începe redarea
-            print(self.service.get_cache_history())
-            # Așteaptă să termine redarea
-            sd.wait()
+            if not self.is_playing:
+                # Start playback
+                self.is_playing = True
+                self.is_paused = False
+                self.stop_event.clear()
+
+                if hasattr(self, 'play_button'):
+                    self.play_button.config(text="Pause")
+                if hasattr(self, 'stop_button'):
+                    self.stop_button.config(state="normal")
+
+                # Pornim un nou thread pentru redare
+                self.playback_thread = threading.Thread(target=self._play_audio_thread, daemon=True)
+                self.playback_thread.start()
+            else:
+                # Toggle pause
+                self.is_paused = not self.is_paused
+                if self.is_paused:
+                    if hasattr(self, 'play_button'):
+                        self.play_button.config(text="Redă")
+                    self.stop_event.set()
+                    try:
+                        sd.stop()
+                    except:
+                        pass
+                else:
+                    if hasattr(self, 'play_button'):
+                        self.play_button.config(text="Pause")
+                    self.stop_event.clear()
+                    self.playback_thread = threading.Thread(target=self._play_audio_thread, daemon=True)
+                    self.playback_thread.start()
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Eroare", f"Eroare la redare: {e}"))
-        finally:
-            # La finalul redării, resetează UI-ul pe thread-ul principal
-            self.root.after(0, self._reset_play_ui)
+            print(f"Error in play: {e}")
+            messagebox.showerror("Eroare", f"Eroare la redare: {e}")
 
     def _reset_play_ui(self):
-        self.is_playing = False
-        self.is_paused = False
-        self.play_button.config(text="Redă", style="TButton")
-        self.stop_button.config(state="disabled")
+        try:
+            self.is_playing = False
+            self.is_paused = False
+            self.stop_event.clear()
 
+            if hasattr(self, 'play_button'):
+                self.play_button.config(text="Redă")
+            if hasattr(self, 'stop_button'):
+                self.stop_button.config(state="disabled")
+        except Exception as e:
+            print(f"Error resetting UI: {e}")
 
     def open_settings(self):
         win = tk.Toplevel(self.root)
@@ -639,21 +753,27 @@ class MainWindowV2:
         ttk.Label(win, text="Director de salvare:").grid(row=0, column=0, padx=5, pady=5)
         save_dir = ttk.Entry(win, width=40)
         save_dir.grid(row=0, column=1, padx=5, pady=5)
-        save_dir.insert(0,self.config.save_directory)
+        save_dir.insert(0, self.config.save_directory)
+
         def browse():
             d = filedialog.askdirectory()
-            if d: save_dir.delete(0,tk.END); save_dir.insert(0,d)
-        ttk.Button(win,text="Browse...",command=browse).grid(row=0,column=2,padx=5)
-        ttk.Label(win,text="Factor pitch:").grid(row=1,column=0,padx=5,pady=5)
+            if d: save_dir.delete(0, tk.END); save_dir.insert(0, d)
+
+        ttk.Button(win, text="Browse...", command=browse).grid(row=0, column=2, padx=5)
+        ttk.Label(win, text="Factor pitch:").grid(row=1, column=0, padx=5, pady=5)
         pitch = ttk.Entry(win)
-        pitch.grid(row=1,column=1,padx=5,pady=5)
-        pitch.insert(0,str(self.config.pitch_factor))
+        pitch.grid(row=1, column=1, padx=5, pady=5)
+        pitch.insert(0, str(self.config.pitch_factor))
+
         def save():
-            self.config.save_directory=save_dir.get()
-            try: self.config.pitch_factor=float(pitch.get())
-            except: messagebox.showerror("Eroare","Pitch trebuie numeric")
+            self.config.save_directory = save_dir.get()
+            try:
+                self.config.pitch_factor = float(pitch.get())
+            except:
+                messagebox.showerror("Eroare", "Pitch trebuie numeric")
             win.destroy()
-        ttk.Button(win,text="Save",command=save).grid(row=2,column=1,pady=10)
+
+        ttk.Button(win, text="Save", command=save).grid(row=2, column=1, pady=10)
 
     def save_recording(self):
         if self.service.recording:
@@ -666,7 +786,17 @@ class MainWindowV2:
         else:
             messagebox.showinfo("Info", "Nu există înregistrare.")
 
-    import threading
+    def _on_recording_loaded(self):
+        """
+        Actualizează interfața după ce o înregistrare a fost încărcată.
+        """
+        self.update_plot()
+        self.update_fields()
+        self.update_bpm_field()
+        # Actualizăm durata
+        if self.service.recording:
+            duration = len(self.service.recording.data) / self.service.recording.sample_rate
+            self.update_duration(duration)
 
     def load_recording(self):
         initial = self.config.save_directory or os.getcwd()
@@ -679,22 +809,19 @@ class MainWindowV2:
 
         def task():
             try:
-                recording = AudioRepository.load(path)
-                self.config.save_directory = os.path.dirname(path)
-                self.root.after(0, lambda: self._on_recording_loaded(recording))
+                success = self.service.load_audio(path)
+                if success:
+                    self.config.save_directory = os.path.dirname(path)
+                    self.root.after(0, self._on_recording_loaded)
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("Eroare", "Nu s-a putut încărca fișierul."))
             except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Eroare", f"Eroare la încărcare: {e}"))
+            finally:
                 self.root.after(0, self.hide_loading)
-                messagebox.showerror("Eroare", f"Eroare la încărcare: {e}")
 
         # 2. Rulează task-ul pe un thread separat
         threading.Thread(target=task, daemon=True).start()
-
-    def _on_recording_loaded(self, recording):
-        self.service.recording = recording
-        self.update_plot()
-        self.update_fields()
-        self.update_bpm_field()
-        self.hide_loading()
 
     def start_playback_ui(self):
         self.is_playing = True
@@ -733,7 +860,7 @@ class MainWindowV2:
 
             def task():
                 try:
-                    self.service.apply_reverb_with_ir("C:\Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav")
+                    self.service.apply_reverb_with_ir_chunked("C:/Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav")
                     self.root.after(0, self.on_reverb_done)
                 except Exception as e:
                     messagebox.showerror("Eroare", f"Eroare la reverb: {e}")
@@ -748,6 +875,10 @@ class MainWindowV2:
         self.play()
         # Actualizăm toate câmpurile relevante
         self.update_fields()
+        # Actualizăm durata
+        if self.service.recording:
+            duration = len(self.service.recording.data) / self.service.recording.sample_rate
+            self.update_duration(duration)
 
     def apply_time_stretch(self):
         try:
@@ -761,6 +892,10 @@ class MainWindowV2:
             # Actualizăm câmpul BPM cu noul BPM țintă
             self.bpm_entry.delete(0, tk.END)
             self.bpm_entry.insert(0, f"{bpm:.2f}")
+            # Actualizăm durata
+            if self.service.recording:
+                duration = len(self.service.recording.data) / self.service.recording.sample_rate
+                self.update_duration(duration)
         except ValueError:
             messagebox.showerror("Error", "Please enter a valid positive BPM.")
 
@@ -784,89 +919,87 @@ class MainWindowV2:
         except Exception as e:
             messagebox.showerror("Eroare", f"Eroare la aplicarea efectului de echo: {e}")
 
-    def apply_compressor(self):
-        # Poți folosi un dialog pentru a seta parametrii, sau folosește valori implicite pentru început
-        try:
-            # Exemplu cu valori implicite (poți extinde cu un dialog pentru parametri)
-            threshold_db = -20.0
-            ratio = 4.0
-            attack_ms = 10.0
-            release_ms = 100.0
-
-            self.service.apply_simple_compressor(
-                threshold_db=threshold_db,
-                ratio=ratio,
-                # attack_ms=attack_ms,
-                # release_ms=release_ms
-            )
-            self.update_plot()
-            self.play()
-            self.update_fields()
-
-        except Exception as e:
-            messagebox.showerror("Eroare", f"Eroare la aplicarea compresorului: {e}")
-
-    def test_compressor(self):
+    def show_compressor_dialog(self):
         if self.service.recording is None:
-            messagebox.showinfo("Info", "Nu există înregistrare pentru test.")
+            messagebox.showinfo("Info", "Nu există înregistrare pentru aplicarea compresorului.")
             return
 
-        y_original = np.copy(self.service.recording.data)
-        sr = self.service.recording.sample_rate
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Compresor")
+        dialog.geometry("400x300")
 
-        # Aplică compresorul fără normalizare
-        _, y_compressed = self.service.apply_simple_compressor(normalize=False)
+        # Frame pentru controale
+        controls_frame = ttk.Frame(dialog)
+        controls_frame.pack(pady=10, padx=10, fill="x")
 
-        # Calculează RMS și amplitudinea maximă
-        def rms(x): return np.sqrt(np.mean(x ** 2))
+        # Threshold
+        threshold_frame = ttk.Frame(controls_frame)
+        threshold_frame.pack(fill="x", pady=5)
+        ttk.Label(threshold_frame, text="Threshold (dB):").pack(side="left")
+        threshold_var = tk.DoubleVar(value=-20.0)
+        threshold_slider = ttk.Scale(threshold_frame, from_=-60.0, to=0.0, variable=threshold_var, orient="horizontal")
+        threshold_slider.pack(side="left", fill="x", expand=True, padx=5)
+        threshold_label = ttk.Label(threshold_frame, text="-20.0")
+        threshold_label.pack(side="left")
+        threshold_var.trace_add("write", lambda *args: threshold_label.config(text=f"{threshold_var.get():.1f}"))
 
-        rms_orig = rms(y_original)
-        rms_comp = rms(y_compressed)
-        max_orig = np.max(np.abs(y_original))
-        max_comp = np.max(np.abs(y_compressed))
+        # Ratio
+        ratio_frame = ttk.Frame(controls_frame)
+        ratio_frame.pack(fill="x", pady=5)
+        ttk.Label(ratio_frame, text="Ratio:").pack(side="left")
+        ratio_var = tk.DoubleVar(value=4.0)
+        ratio_slider = ttk.Scale(ratio_frame, from_=1.0, to=20.0, variable=ratio_var, orient="horizontal")
+        ratio_slider.pack(side="left", fill="x", expand=True, padx=5)
+        ratio_label = ttk.Label(ratio_frame, text="4.0")
+        ratio_label.pack(side="left")
+        ratio_var.trace_add("write", lambda *args: ratio_label.config(text=f"{ratio_var.get():.1f}"))
 
-        # Plot
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(y_original, label="Original", alpha=0.7)
-        ax.plot(y_compressed, label="Compresat (fără normalizare)", alpha=0.7)
-        ax.set_title("Comparație semnal original vs. compresat")
-        ax.set_xlabel("Eșantion")
-        ax.set_ylabel("Amplitudine")
-        ax.legend()
-        ax.grid(True)
-        plt.show()
+        # Normalize
+        normalize_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(controls_frame, text="Normalize", variable=normalize_var).pack(pady=5)
 
-        # Afișează valorile
-        print(f"RMS original: {rms_orig:.4f}, RMS compresat: {rms_comp:.4f}")
-        print(f"Max original: {max_orig:.4f}, Max compresat: {max_comp:.4f}")
+        def apply():
+            try:
+                result = self.service.apply_simple_compressor(
+                    threshold_db=threshold_var.get(),
+                    ratio=ratio_var.get(),
+                    normalize=normalize_var.get()
+                )
+                if result:
+                    self.update_plot()
+                    self.play()
+                    self.update_fields()
+                    # Actualizăm durata
+                    duration = len(result.data) / result.sample_rate
+                    self.update_duration(duration)
+                    dialog.destroy()
+                    messagebox.showinfo("Succes", "Compresor aplicat cu succes!")
+                else:
+                    messagebox.showerror("Eroare", "Nu s-a putut aplica compresorul!")
+            except Exception as e:
+                messagebox.showerror("Eroare", f"Eroare la aplicarea compresorului: {str(e)}")
 
-    def apply_lpf(self):
-        try:
-            self.service.apply_lowpass_filter(cutoff_hz=1000.0, order=5)
-            self.update_plot()
-            self.play()
-            self.update_fields()
-        except Exception as e:
-            messagebox.showerror("Eroare", f"Eroare la LPF: {e}")
+        def preview():
+            try:
+                result = self.service.apply_simple_compressor(
+                    threshold_db=threshold_var.get(),
+                    ratio=ratio_var.get(),
+                    normalize=normalize_var.get()
+                )
+                if result:
+                    self.service.play()
+            except Exception as e:
+                messagebox.showerror("Eroare", f"Eroare la preview: {str(e)}")
 
-    def apply_hpf(self):
-        try:
-            self.service.apply_highpass_filter(cutoff_hz=1000.0, order=5)
-            self.update_plot()
-            self.play()
-            self.update_fields()
-        except Exception as e:
-            messagebox.showerror("Eroare", f"Eroare la HPF: {e}")
+        # Butoane
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Preview", command=preview).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Aplică", command=apply).pack(side="left", padx=5)
 
-    def apply_bpf(self):
-        try:
-            self.service.apply_bandpass_filter(lowcut_hz=300.0, highcut_hz=3000.0, order=5)
-            self.update_plot()
-            self.play()
-            self.update_fields()
-        except Exception as e:
-            messagebox.showerror("Eroare", f"Eroare la BPF: {e}")
+    def apply_compressor(self):
+        """Aplică compresorul pe înregistrare"""
+        self.show_compressor_dialog()
 
     def show_distortion_dialog(self):
         if self.service.recording is None:
@@ -1084,6 +1217,145 @@ class MainWindowV2:
                 messagebox.showinfo("Info", "Nu există stări anterioare pentru Undo.")
         except Exception as e:
             messagebox.showerror("Eroare", f"Eroare la aplicarea Undo: {e}")
+
+    def update_progress(self, value):
+        """
+        Actualizează bara de progres și statusul.
+        """
+        self.progress_var.set(value)
+        self.status_label.config(text=f"Procesare: {value:.1f}%")
+        self.root.update_idletasks()
+
+    def update_duration(self, duration):
+        """
+        Actualizează câmpul de durată din interfață.
+        :param duration: Durata în secunde
+        """
+        try:
+            self.duration_entry.delete(0, tk.END)
+            self.duration_entry.insert(0, f"{duration:.2f}")
+            self.root.update_idletasks()  # Forțăm actualizarea UI-ului
+        except Exception as e:
+            print(f"Error updating duration: {e}")
+
+    def apply_lpf(self):
+        try:
+            self.service.apply_lowpass_filter(cutoff_hz=1000.0, order=5)
+            self.update_plot()
+            self.play()
+            self.update_fields()
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la LPF: {e}")
+
+    def apply_hpf(self):
+        try:
+            self.service.apply_highpass_filter(cutoff_hz=1000.0, order=5)
+            self.update_plot()
+            self.play()
+            self.update_fields()
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la HPF: {e}")
+
+    def apply_bpf(self):
+        try:
+            self.service.apply_bandpass_filter(lowcut_hz=300.0, highcut_hz=3000.0, order=5)
+            self.update_plot()
+            self.play()
+            self.update_fields()
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Eroare la BPF: {e}")
+
+    def test_compressor(self):
+        if self.service.recording is None:
+            messagebox.showinfo("Info", "Nu există înregistrare pentru test.")
+            return
+
+        # Salvăm semnalul original
+        y_original = np.copy(self.service.recording.data)
+        sr = self.service.recording.sample_rate
+
+        print("\n=== TEST COMPRESOR ===")
+        print(f"Lungime semnal original: {len(y_original)} eșantioane")
+        print(f"Durată: {len(y_original) / sr:.2f} secunde")
+
+        # Calculăm statistici pentru semnalul original
+        rms_orig = np.sqrt(np.mean(y_original ** 2))
+        max_orig = np.max(np.abs(y_original))
+        min_orig = np.min(y_original)
+        print("\nStatistici semnal original:")
+        print(f"RMS: {rms_orig:.4f}")
+        print(f"Max: {max_orig:.4f}")
+        print(f"Min: {min_orig:.4f}")
+        print(f"Dynamic Range: {20 * np.log10(max_orig / rms_orig):.2f} dB")
+
+        # Aplicăm compresorul cu setări moderate
+        result = self.service.apply_simple_compressor(
+            threshold_db=-20.0,
+            ratio=4.0,
+            normalize=True
+        )
+
+        if result is None:
+            print("Eroare la aplicarea compresorului!")
+            return
+
+        y_compressed = result.data
+
+        # Calculăm statistici pentru semnalul compresat
+        rms_comp = np.sqrt(np.mean(y_compressed ** 2))
+        max_comp = np.max(np.abs(y_compressed))
+        min_comp = np.min(y_compressed)
+        print("\nStatistici semnal compresat:")
+        print(f"RMS: {rms_comp:.4f}")
+        print(f"Max: {max_comp:.4f}")
+        print(f"Min: {min_comp:.4f}")
+        print(f"Dynamic Range: {20 * np.log10(max_comp / rms_comp):.2f} dB")
+
+        # Calculăm diferențele
+        print("\nDiferențe:")
+        print(f"RMS Change: {20 * np.log10(rms_comp / rms_orig):.2f} dB")
+        print(f"Max Change: {20 * np.log10(max_comp / max_orig):.2f} dB")
+        print(f"Dynamic Range Change: {20 * np.log10((max_comp / rms_comp) / (max_orig / rms_orig)):.2f} dB")
+
+        # Afișăm un grafic de comparație
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+
+        # Grafic pentru semnalul original
+        ax1.plot(y_original, label="Original", alpha=0.7)
+        ax1.set_title("Semnal Original")
+        ax1.set_xlabel("Eșantion")
+        ax1.set_ylabel("Amplitudine")
+        ax1.grid(True)
+        ax1.legend()
+
+        # Grafic pentru semnalul compresat
+        ax2.plot(y_compressed, label="Compresat", alpha=0.7)
+        ax2.set_title("Semnal Compresat")
+        ax2.set_xlabel("Eșantion")
+        ax2.set_ylabel("Amplitudine")
+        ax2.grid(True)
+        ax2.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+        # Redăm ambele semnale pentru comparație
+        print("\nRedare semnal original...")
+        sd.play(y_original, sr)
+        sd.wait()
+
+        print("Redare semnal compresat...")
+        sd.play(y_compressed, sr)
+        sd.wait()
+
+    def __del__(self):
+        # Curățăm resursele la închiderea aplicației
+        try:
+            with self.lock:
+                sd.stop()
+        except:
+            pass
+
 
 if __name__ == "__main__":
     root = tk.Tk()
