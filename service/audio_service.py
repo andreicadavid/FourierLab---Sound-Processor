@@ -84,6 +84,9 @@ class AudioService:
 
     def record(self, duration_seconds):
         print("Începere înregistrare...")
+        self.is_recording = True
+        if self.progress_callback:
+            self.progress_callback(0)
         data = sd.rec(
             int(duration_seconds * self.config.sample_rate),
             samplerate=self.config.sample_rate,
@@ -96,6 +99,9 @@ class AudioService:
         self.recording = Recording(data.flatten(), self.config.sample_rate)
         self.cache_state("recording")
         print("Înregistrare finalizată.")
+        self.is_recording = False
+        if self.progress_callback:
+            self.progress_callback(100)
 
     def stop_recording(self):
         """
@@ -896,6 +902,7 @@ class AudioService:
             data,
             chunk_size,
             process_func,
+            progress_callback=self.progress_callback,
             sr=sr,
             **kwargs
         )

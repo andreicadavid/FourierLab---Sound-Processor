@@ -101,7 +101,7 @@ class MainWindowV2:
         self.progress_bar.pack(fill="x", padx=5, pady=2)
 
         # Label pentru status
-        self.status_label = ttk.Label(status_frame, text="Gata")
+        self.status_label = ttk.Label(status_frame, text="Introduceți o înregistrare!")
         self.status_label.pack(fill="x", padx=5, pady=2)
 
         # Frame pentru controale (deasupra ploturilor)
@@ -294,7 +294,7 @@ class MainWindowV2:
 
         # Resetăm UI-ul
         self._reset_play_ui()
-        self.status_label.config(text="Gata")
+        self.status_label.config(text="Standby")
         self.progress_var.set(0)
 
         # Dezactivăm butonul de stop
@@ -721,7 +721,7 @@ class MainWindowV2:
             self.root.after(100, self._check_recording_status)
         except ValueError:
             messagebox.showerror("Eroare", "Durata trebuie să fie un număr valid.")
-            self.status_label.config(text="Gata")
+            self.status_label.config(text="Înregistrare oprită!")
 
     def _check_recording_status(self):
         """
@@ -730,7 +730,10 @@ class MainWindowV2:
         if self.service.is_recording:
             self.root.after(100, self._check_recording_status)
         else:
-            self.status_label.config(text="Gata")
+            self.status_label.config(text="Înregistrare finalizată. Gata de redare!")
+            self.progress_var.set(100)
+            if hasattr(self.service, 'original_bpm'):
+                delattr(self.service, 'original_bpm')
             self._on_recording_loaded()
 
     def play(self):
@@ -756,7 +759,7 @@ class MainWindowV2:
         if self.service.is_playing:
             self.root.after(100, self._check_playback_status)
         else:
-            self.status_label.config(text="Gata")
+            self.status_label.config(text="Standby")
             self._reset_play_ui()
 
     def _reset_play_ui(self):
@@ -826,7 +829,7 @@ class MainWindowV2:
         if self.service.is_recording:
             self.root.after(100, self._check_recording_status)
         else:
-            self.status_label.config(text="Gata")
+            self.status_label.config(text="Standby")
             # Resetăm BPM-ul original pentru a forța recalcularea
             if hasattr(self.service, 'original_bpm'):
                 delattr(self.service, 'original_bpm')
@@ -872,7 +875,7 @@ class MainWindowV2:
         if self.service.is_loading:
             self.root.after(100, self._check_loading_status)
         else:
-            self.status_label.config(text="Gata")
+            self.status_label.config(text="Standby")
             self._on_recording_loaded()
 
     def start_playback_ui(self):
@@ -882,6 +885,8 @@ class MainWindowV2:
         self.stop_button.config(state="normal")
 
     def pitch_up(self):
+        self.status_label.config(text="Se aplică pitch up...")
+        self.progress_var.set(0)
         shifted = self.service.pitch_shift(up=True)
         if shifted:
             self.service.recording = shifted
@@ -891,6 +896,8 @@ class MainWindowV2:
         self.update_fields()
 
     def pitch_down(self):
+        self.status_label.config(text="Se aplică pitch down...")
+        self.progress_var.set(0)
         shifted = self.service.pitch_shift(up=False)
         if shifted:
             self.service.recording = shifted
@@ -901,6 +908,8 @@ class MainWindowV2:
 
     def apply_reverb(self):
         try:
+            self.status_label.config(text="Se aplică reverb...")
+            self.progress_var.set(0)
             if self.service.recording is None:
                 messagebox.showinfo("Info", "Nu există înregistrare pentru reverb.")
                 return
@@ -931,6 +940,8 @@ class MainWindowV2:
 
     def apply_time_stretch(self):
         try:
+            self.status_label.config(text="Se aplică time stretch...")
+            self.progress_var.set(0)
             target_bpm = float(self.bpm_entry.get())
             if target_bpm <= 0:
                 raise ValueError("BPM trebuie să fie un număr pozitiv.")
@@ -962,16 +973,18 @@ class MainWindowV2:
 
         except ValueError as e:
             messagebox.showerror("Eroare", str(e))
-            self.status_label.config(text="Gata")
+            self.status_label.config(text="Standby")
         except Exception as e:
             messagebox.showerror("Eroare", f"Eroare la aplicarea time stretch: {e}")
-            self.status_label.config(text="Gata")
+            self.status_label.config(text="Standby")
 
     def apply_echo(self):
         """
         Apelează metoda din AudioService pentru a aplica efectul de echo.
         """
         try:
+            self.status_label.config(text="Se aplică echo...")
+            self.progress_var.set(0)
             decay = float(self.decay_entry.get())
             delay = float(self.delay_entry.get())
 
@@ -1067,6 +1080,8 @@ class MainWindowV2:
 
     def apply_compressor(self):
         """Aplică compresorul pe înregistrare"""
+        self.status_label.config(text="Se aplică compressor...")
+        self.progress_var.set(0)
         self.show_compressor_dialog()
 
     def show_distortion_dialog(self):
@@ -1116,6 +1131,8 @@ class MainWindowV2:
 
         def apply():
             try:
+                self.status_label.config(text="Se aplică distortion...")
+                self.progress_var.set(0)
                 self.service.apply_distortion(
                     drive=drive_var.get(),
                     tone=tone_var.get(),
@@ -1130,6 +1147,8 @@ class MainWindowV2:
         ttk.Button(dialog, text="Aplică", command=apply).pack(pady=10)
 
     def show_equalizer_dialog(self):
+        self.status_label.config(text="Se aplică compressor...")
+        self.progress_var.set(0)
         if self.service.recording is None:
             messagebox.showinfo("Info", "Nu există înregistrare pentru aplicarea egalizatorului.")
             return
@@ -1275,6 +1294,8 @@ class MainWindowV2:
         Revine la ultima stare salvată a înregistrării.
         """
         try:
+            self.status_label.config(text="Se revine la versiunea anterioară!")
+            self.progress_var.set(0)
             if self.service.undo():
                 # Resetăm BPM-ul original pentru a forța recalcularea
                 if hasattr(self.service, 'original_bpm'):
@@ -1283,7 +1304,7 @@ class MainWindowV2:
                 self.play()  # Redă înregistrarea anterioară
                 # Actualizăm toate câmpurile relevante
                 self.update_fields()
-                self.update_bpm_field()
+                #self.update_bpm_field()
                 # Actualizăm durata
                 if self.service.recording:
                     duration = len(self.service.recording.data) / self.service.recording.sample_rate
@@ -1299,6 +1320,10 @@ class MainWindowV2:
         """
         self.progress_var.set(value)
         self.root.update_idletasks()
+        # Dacă progresul ajunge la 100 și statusul este 'Se înregistrează...', actualizăm statusul
+        if value >= 100 and self.status_label.cget("text") == "Se înregistrează...":
+            self.status_label.config(text="Înregistrare finalizată. Gata de redare!")
+
 
     def update_duration(self, duration):
         """
@@ -1308,13 +1333,15 @@ class MainWindowV2:
         try:
             self.duration_entry.delete(0, tk.END)
             self.duration_entry.insert(0, f"{duration:.2f}")
-            self.status_label.config(text=f"Durată: {duration:.2f} secunde")
+            #self.status_label.config(text=f"Durată: {duration:.2f} secunde")
             self.root.update_idletasks()  # Forțăm actualizarea UI-ului
         except Exception as e:
             print(f"Error updating duration: {e}")
 
     def apply_lpf(self):
         try:
+            self.status_label.config(text="Se aplică Low Pass Filter...")
+            self.progress_var.set(0)
             self.service.apply_lowpass_filter(cutoff_hz=1000.0, order=5)
             self.update_plot()
             self.play()
@@ -1324,6 +1351,8 @@ class MainWindowV2:
 
     def apply_hpf(self):
         try:
+            self.status_label.config(text="Se aplică High Pass Filter...")
+            self.progress_var.set(0)
             self.service.apply_highpass_filter(cutoff_hz=1000.0, order=5)
             self.update_plot()
             self.play()
@@ -1333,6 +1362,8 @@ class MainWindowV2:
 
     def apply_bpf(self):
         try:
+            self.status_label.config(text="Se aplică Band Filter...")
+            self.progress_var.set(0)
             self.service.apply_bandpass_filter(lowcut_hz=300.0, highcut_hz=3000.0, order=5)
             self.update_plot()
             self.play()

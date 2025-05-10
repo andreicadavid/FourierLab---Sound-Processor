@@ -130,18 +130,21 @@ class AudioProcessor:
         self.max_workers = max_workers or multiprocessing.cpu_count()
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
 
-    def process_chunks_parallel(self, data, chunk_size, process_func, **kwargs):
+    def process_chunks_parallel(self, data, chunk_size, process_func, progress_callback=None, **kwargs):
         """
         Procesează datele audio în paralel folosind multiple threaduri.
         :param data: Datele audio de procesat
         :param chunk_size: Dimensiunea fiecărui chunk
         :param process_func: Funcția de procesare pentru fiecare chunk
+        :param progress_callback: Funcție de callback pentru progres (0-100)
         :param kwargs: Argumente adiționale pentru funcția de procesare
         :return: Datele procesate
         """
         # Pentru înregistrări scurte, procesăm totul ca un singur chunk
         if len(data) <= chunk_size * 2:
             try:
+                if progress_callback:
+                    progress_callback(100)
                 return process_func(data, **kwargs)
             except Exception as e:
                 print(f"Eroare la procesarea înregistrării scurte: {e}")
@@ -168,6 +171,7 @@ class AudioProcessor:
                 for i, chunk in enumerate(chunks)
             }
             processed_chunks = [None] * total_chunks
+            completed = 0
             for future in as_completed(future_to_index):
                 index = future_to_index[future]
                 try:
@@ -182,6 +186,10 @@ class AudioProcessor:
                 except Exception as e:
                     print(f"Eroare la procesarea chunk-ului {index}: {e}")
                     processed_chunks[index] = chunks[index]
+                completed += 1
+                if progress_callback:
+                    percent = int(completed / total_chunks * 100)
+                    progress_callback(percent)
 
         # Overlap-add cu ferestre liniare
         result = np.zeros(len(data))
@@ -202,6 +210,8 @@ class AudioProcessor:
         # Normalizare pentru a evita boost sau scădere de volum
         weight[weight == 0] = 1
         result /= weight
+        if progress_callback:
+            progress_callback(100)
         return result
 
     def shutdown(self):
