@@ -901,9 +901,6 @@ class MainWindowV2:
 
     def apply_reverb(self):
         try:
-            decay = float(self.decay_entry.get())
-            delay = float(self.delay_entry.get())
-            ir_dur = float(self.ir_duration_entry.get())
             if self.service.recording is None:
                 messagebox.showinfo("Info", "Nu există înregistrare pentru reverb.")
                 return

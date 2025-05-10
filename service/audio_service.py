@@ -281,16 +281,41 @@ class AudioService:
         return False
 
     def pitch_shift(self, up=True):
-        self.save_state()  # Salvează starea înainte de aplicarea efectului
-        if self.recording:
-            n_steps = 12 * np.log2(self.config.pitch_factor) if up else -12 * np.log2(self.config.pitch_factor)
-            shifted = librosa.effects.pitch_shift(self.recording.data, sr=self.recording.sample_rate, n_steps=n_steps)
-            self.cache_state("pitch_shift", {})
-            self._update_duration()
-            return Recording(shifted, self.recording.sample_rate)
-        else:
+        if self.recording is None:
             print("Nu există înregistrare pentru pitch shift.")
             return None
+
+        self.save_state()
+        if self.progress_callback:
+            self.progress_callback(0)
+
+        n_steps = 12 * np.log2(self.config.pitch_factor) if up else -12 * np.log2(self.config.pitch_factor)
+
+        def process_pitch_chunk(chunk, sr, n_steps):
+            return librosa.effects.pitch_shift(chunk, sr=sr, n_steps=n_steps)
+
+        # Procesăm pe chunks mai mici
+        chunk_size = min(1024 * 1024, len(self.recording.data))  # 1MB sau mai puțin
+        processed_data = self.process_in_chunks(
+            process_pitch_chunk,
+            chunk_size=chunk_size,
+            n_steps=n_steps
+        )
+
+        if processed_data is not None:
+            # Normalizăm rezultatul final
+            max_val = np.max(np.abs(processed_data))
+            if max_val > 0:
+                processed_data = processed_data / max_val * 0.95  # Lăsăm un pic de headroom
+
+            self.recording = Recording(processed_data, self.recording.sample_rate)
+            self.cache_state("pitch_shift", {"up": up, "n_steps": n_steps})
+            self._update_duration()
+
+        if self.progress_callback:
+            self.progress_callback(100)
+
+        return self.recording
 
     def apply_reverb(self, decay=0.5, delay=0.02, ir_duration=0.5):
         if self.recording is None:
@@ -424,8 +449,8 @@ class AudioService:
 
         def process_reverb_ir_chunk(chunk, sr, ir):
             from scipy.signal import fftconvolve
-            # Folosim mode='same' pentru a păstra lungimea originală
-            reverb_signal = fftconvolve(chunk, ir, mode='same')
+            # Folosim mode='full' pentru a păstra întreaga coadă a reverbului
+            reverb_signal = fftconvolve(chunk, ir, mode='full')
             # Normalizare locală pentru chunk
             max_val = np.max(np.abs(reverb_signal))
             if max_val > 0:
@@ -441,14 +466,27 @@ class AudioService:
         )
 
         if processed_data is not None:
-            # Asigurăm-ne că lungimea este aceeași cu originalul
-            if len(processed_data) != len(self.recording.data):
-                processed_data = processed_data[:len(self.recording.data)]
+            # Calculăm lungimea maximă permisă (original + 50% pentru reverb)
+            max_length = int(len(self.recording.data) * 1.5)
+
+            # Dacă semnalul procesat este mai lung decât maximul permis
+            if len(processed_data) > max_length:
+                # Aplicăm un fade-out gradual pe ultimele 500ms
+                fade_length = int(0.5 * self.recording.sample_rate)
+                fade_out = np.linspace(1, 0, fade_length)
+                processed_data[-fade_length:] *= fade_out
+                # Tăiem la lungimea maximă
+                processed_data = processed_data[:max_length]
+            else:
+                # Dacă semnalul este mai scurt, îl extindem la lungimea originală
+                if len(processed_data) < len(self.recording.data):
+                    padding = np.zeros(len(self.recording.data) - len(processed_data))
+                    processed_data = np.concatenate([processed_data, padding])
 
             # Normalizăm rezultatul final
             max_val = np.max(np.abs(processed_data))
             if max_val > 0:
-                processed_data = processed_data / max_val * 0.95
+                processed_data = processed_data / max_val * 0.95  # Lăsăm un pic de headroom
 
             self.recording = Recording(processed_data, self.recording.sample_rate)
             self.cache_state("ReverbIR", {"ir_path": ir_path})
