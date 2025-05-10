@@ -286,6 +286,7 @@ class AudioService:
             n_steps = 12 * np.log2(self.config.pitch_factor) if up else -12 * np.log2(self.config.pitch_factor)
             shifted = librosa.effects.pitch_shift(self.recording.data, sr=self.recording.sample_rate, n_steps=n_steps)
             self.cache_state("pitch_shift", {})
+            self._update_duration()
             return Recording(shifted, self.recording.sample_rate)
         else:
             print("Nu există înregistrare pentru pitch shift.")
@@ -325,6 +326,7 @@ class AudioService:
         if processed_data is not None:
             self.recording = Recording(processed_data, self.recording.sample_rate)
             self.cache_state("Reverb", {"decay": decay, "delay": delay, "ir_duration": ir_duration})
+            self._update_duration()
 
         if self.progress_callback:
             self.progress_callback(100)
@@ -359,6 +361,7 @@ class AudioService:
         if processed_data is not None:
             self.recording = Recording(processed_data, self.recording.sample_rate)
             self.cache_state("Echo", {"decay": decay, "delay": delay, "repeats": repeats})
+            self._update_duration()
 
         if self.progress_callback:
             self.progress_callback(100)
@@ -397,6 +400,7 @@ class AudioService:
         if processed_data is not None:
             self.recording = Recording(processed_data, self.recording.sample_rate)
             self.cache_state("Equalizer", {"bands": bands})
+            self._update_duration()
 
         if self.progress_callback:
             self.progress_callback(100)
@@ -452,7 +456,7 @@ class AudioService:
 
         if self.progress_callback:
             self.progress_callback(100)
-
+        self._update_duration()
         return self.recording
 
     def calculate_spectral_features(self):
@@ -736,7 +740,7 @@ class AudioService:
 
         if self.progress_callback:
             self.progress_callback(100)
-
+        self._update_duration()
         return self.recording
 
     def apply_lowpass_filter(self, cutoff_hz=1000.0, order=5):
@@ -766,7 +770,7 @@ class AudioService:
 
         if self.progress_callback:
             self.progress_callback(100)
-
+        self._update_duration()
         return self.recording
 
     def apply_highpass_filter(self, cutoff_hz=1000.0, order=5):
@@ -796,7 +800,7 @@ class AudioService:
 
         if self.progress_callback:
             self.progress_callback(100)
-
+        self._update_duration()
         return self.recording
 
     def apply_bandpass_filter(self, lowcut_hz=300.0, highcut_hz=3000.0, order=5):
@@ -828,7 +832,7 @@ class AudioService:
 
         if self.progress_callback:
             self.progress_callback(100)
-
+        self._update_duration()
         return self.recording
 
     def process_in_chunks(self, process_func, chunk_size=None, **kwargs):
@@ -985,6 +989,7 @@ class AudioService:
         if self.progress_callback:
             self.progress_callback(100)
 
+        self._update_duration()
         return self.recording
 
     def apply_reverb_chunked(self, decay=0.5, delay=0.02, ir_duration=0.5):
@@ -1210,6 +1215,7 @@ class AudioService:
 
                 # Creăm înregistrarea
                 self.recording = Recording(audio_data, frame_rate)
+                self._update_duration()
                 return True
 
         except Exception as e:

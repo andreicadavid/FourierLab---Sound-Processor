@@ -687,11 +687,22 @@ class MainWindowV2:
 
     def update_bpm_field(self):
         if self.service.recording:
-            y = self.service.recording.data
-            sr = self.service.recording.sample_rate
-            bpm, _ = librosa.beat.beat_track(y=y, sr=sr)
-            if isinstance(bpm, np.ndarray):
-                bpm = float(bpm.item())
+            # Folosim BPM-ul original salvat în service dacă există
+            if hasattr(self.service, 'original_bpm') and self.service.original_bpm is not None:
+                bpm = self.service.original_bpm
+            else:
+                # Dacă nu există, îl calculăm
+                y = self.service.recording.data
+                sr = self.service.recording.sample_rate
+                # Folosim beat_track pentru a calcula BPM-ul
+                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+                if isinstance(tempo, np.ndarray):
+                    bpm = float(tempo.item())
+                else:
+                    bpm = float(tempo)
+                # Salvăm BPM-ul calculat în service
+                self.service.original_bpm = bpm
+
             self.bpm_entry.delete(0, tk.END)
             self.bpm_entry.insert(0, f"{bpm:.2f}")
 
@@ -808,26 +819,37 @@ class MainWindowV2:
             # Salvarea se face în thread separat, așteptăm finalizarea
             self.root.after(100, self._check_saving_status)
 
-    def _check_saving_status(self):
+    def _check_recording_status(self):
         """
-        Verifică statusul salvării și actualizează interfața.
+        Verifică statusul înregistrării și actualizează interfața.
         """
-        if self.service.is_saving:
-            self.root.after(100, self._check_saving_status)
+        if self.service.is_recording:
+            self.root.after(100, self._check_recording_status)
         else:
             self.status_label.config(text="Gata")
+            # Resetăm BPM-ul original pentru a forța recalcularea
+            if hasattr(self.service, 'original_bpm'):
+                delattr(self.service, 'original_bpm')
+            self._on_recording_loaded()
 
     def _on_recording_loaded(self):
         """
         Actualizează interfața după ce o înregistrare a fost încărcată.
         """
         self.update_plot()
+        # Resetăm BPM-ul original pentru a forța recalcularea
+        if hasattr(self.service, 'original_bpm'):
+            delattr(self.service, 'original_bpm')
         self.update_fields()
         self.update_bpm_field()
         self.show_spectral_features()
         pitch_and_tuning = self.service.analyze_pitch_and_tuning()
         if pitch_and_tuning:
             self.update_pitch_and_tuning_ui(pitch_and_tuning)
+        # Actualizăm durata
+        if self.service.recording:
+            duration = len(self.service.recording.data) / self.service.recording.sample_rate
+            self.update_duration(duration)
 
     def load_recording(self):
         """
@@ -912,31 +934,34 @@ class MainWindowV2:
 
     def apply_time_stretch(self):
         try:
-            bpm = float(self.bpm_entry.get())
-            if bpm <= 0:
+            target_bpm = float(self.bpm_entry.get())
+            if target_bpm <= 0:
                 raise ValueError("BPM trebuie să fie un număr pozitiv.")
 
             self.status_label.config(text="Se aplică time stretch...")
             self.progress_var.set(0)
 
             # Aplicăm time stretch
-            self.service.apply_time_stretch_bpm(bpm)
+            result = self.service.apply_time_stretch_bpm(target_bpm)
 
-            # Actualizăm interfața
-            self.update_plot()
-            self.play()
-            self.update_fields()
+            if result:
+                # Actualizăm interfața
+                self.update_plot()
+                self.play()
+                self.update_fields()
 
-            # Actualizăm câmpul BPM cu noul BPM țintă
-            self.bpm_entry.delete(0, tk.END)
-            self.bpm_entry.insert(0, f"{bpm:.2f}")
+                # Actualizăm câmpul BPM cu noul BPM țintă
+                self.bpm_entry.delete(0, tk.END)
+                self.bpm_entry.insert(0, f"{target_bpm:.2f}")
 
-            # Actualizăm durata
-            if self.service.recording:
-                duration = len(self.service.recording.data) / self.service.recording.sample_rate
-                self.update_duration(duration)
+                # Actualizăm durata
+                if self.service.recording:
+                    duration = len(self.service.recording.data) / self.service.recording.sample_rate
+                    self.update_duration(duration)
 
-            self.status_label.config(text="Time stretch aplicat")
+                self.status_label.config(text="Time stretch aplicat")
+            else:
+                messagebox.showerror("Eroare", "Nu s-a putut aplica time stretch.")
 
         except ValueError as e:
             messagebox.showerror("Eroare", str(e))
@@ -1254,11 +1279,18 @@ class MainWindowV2:
         """
         try:
             if self.service.undo():
+                # Resetăm BPM-ul original pentru a forța recalcularea
+                if hasattr(self.service, 'original_bpm'):
+                    delattr(self.service, 'original_bpm')
                 self.update_plot()  # Actualizează graficul
                 self.play()  # Redă înregistrarea anterioară
                 # Actualizăm toate câmpurile relevante
                 self.update_fields()
                 self.update_bpm_field()
+                # Actualizăm durata
+                if self.service.recording:
+                    duration = len(self.service.recording.data) / self.service.recording.sample_rate
+                    self.update_duration(duration)
             else:
                 messagebox.showinfo("Info", "Nu există stări anterioare pentru Undo.")
         except Exception as e:
