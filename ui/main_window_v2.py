@@ -71,7 +71,7 @@ class MainWindowV2:
         self.decay_entry.insert(0, "0.5")
 
         self.delay_entry = ttk.Entry()
-        self.delay_entry.insert(0, "0.02")
+        self.delay_entry.insert(0, "0.1")
 
         self.ir_duration_entry = ttk.Entry()
         self.ir_duration_entry.insert(0, "0.5")
@@ -126,7 +126,7 @@ class MainWindowV2:
             ("Durată (sec):", "5"),
             ("Sample Rate:", str(self.config.sample_rate)),
             ("Decay (0-1):", "0.5"),
-            ("Delay (sec):", "0.02"),
+            ("Delay (sec):", "0.1"),
             ("IR Duration:", "0.5")
         ]:
             frame = ttk.Frame(settings_frame)
