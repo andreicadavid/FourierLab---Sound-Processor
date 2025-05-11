@@ -87,21 +87,37 @@ class AudioService:
         self.is_recording = True
         if self.progress_callback:
             self.progress_callback(0)
-        data = sd.rec(
-            int(duration_seconds * self.config.sample_rate),
-            samplerate=self.config.sample_rate,
-            channels=1,
-            dtype='float64',
-            device=self.config.input_device,
-            blocksize=self.config.buffer_size
-        )
-        sd.wait()
-        self.recording = Recording(data.flatten(), self.config.sample_rate)
-        self.cache_state("recording")
-        print("Înregistrare finalizată.")
-        self.is_recording = False
-        if self.progress_callback:
-            self.progress_callback(100)
+
+        def recording_task():
+            try:
+                data = sd.rec(
+                    int(duration_seconds * self.config.sample_rate),
+                    samplerate=self.config.sample_rate,
+                    channels=1,
+                    dtype='float64',
+                    device=self.config.input_device,
+                    blocksize=self.config.buffer_size
+                )
+                # În loc de sd.wait(), folosește un loop care verifică flag-ul
+                total_samples = int(duration_seconds * self.config.sample_rate)
+                while self.is_recording and (sd.get_stream().active or sd.get_stream().time < duration_seconds):
+                    sd.sleep(100)
+                sd.stop()
+                if self.is_recording:
+                    self.recording = Recording(data.flatten(), self.config.sample_rate)
+                    self.cache_state("recording")
+                    print("Înregistrare finalizată.")
+                else:
+                    print("Înregistrare oprită manual.")
+            except Exception as e:
+                print(f"Eroare la înregistrare: {e}")
+            finally:
+                self.is_recording = False
+                if self.progress_callback:
+                    self.progress_callback(100)
+
+        self.recording_thread = threading.Thread(target=recording_task)
+        self.recording_thread.start()
 
     def stop_recording(self):
         """
@@ -1260,6 +1276,8 @@ class AudioService:
 
                 # Creăm înregistrarea
                 self.recording = Recording(audio_data, frame_rate)
+                # Adăugăm înregistrarea în cache
+                self.cache_state("load_audio", {"file_path": path})
                 self._update_duration()
                 return True
 

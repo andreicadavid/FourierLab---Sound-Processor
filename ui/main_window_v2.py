@@ -10,6 +10,7 @@ import librosa.display
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 
+from domain.recording import Recording
 from service.audio_service import AudioService
 from repo.audio_repo import AudioRepository
 from domain.config import Config
@@ -288,9 +289,17 @@ class MainWindowV2:
 
         # Oprim înregistrarea
         if self.service.is_recording:
-            self.service.is_recording = False
-            if self.service.recording_thread:
-                self.service.recording_thread.join()
+            self.service.stop_recording()  # Folosim metoda din AudioService
+            self.status_label.config(text="Înregistrare oprită manual!")
+            self.progress_var.set(0)
+            self.play_button.config(state="normal")
+            # Restaurăm instant înregistrarea anterioară dacă există
+            if hasattr(self, '_recording_before_record') and self._recording_before_record is not None:
+                self.service.recording = self._recording_before_record
+                # Actualizăm UI-ul asincron pentru a nu bloca interfața
+                self.root.after(10, self.update_plot)
+                self.root.after(20, self.update_fields)
+                self.root.after(30, self.update_bpm_field)
 
         # Resetăm UI-ul
         self._reset_play_ui()
@@ -712,11 +721,13 @@ class MainWindowV2:
         """
         try:
             duration = float(self.duration_entry.get())
+            # Salvez referința la înregistrarea curentă înainte de a începe o nouă înregistrare
+            self._recording_before_record = self.service.recording
             self.status_label.config(text="Se înregistrează...")
             self.progress_var.set(0)
             self.service.record(duration)
-            # Activăm butonul de stop
             self.stop_button.config(state="normal")
+            self.play_button.config(state="disabled")  # Dezactivăm butonul de play în timpul înregistrării
             # Înregistrarea se face în thread separat, așteptăm finalizarea
             self.root.after(100, self._check_recording_status)
         except ValueError:
@@ -735,6 +746,8 @@ class MainWindowV2:
             if hasattr(self.service, 'original_bpm'):
                 delattr(self.service, 'original_bpm')
             self._on_recording_loaded()
+            # Reactivăm butonul de play după finalizarea înregistrării
+            self.play_button.config(state="normal")
 
     def play(self):
         """
@@ -853,6 +866,8 @@ class MainWindowV2:
         if self.service.recording:
             duration = len(self.service.recording.data) / self.service.recording.sample_rate
             self.update_duration(duration)
+        # Reactivăm butonul de play
+        self.play_button.config(state="normal")
 
     def load_recording(self):
         """
@@ -1168,6 +1183,7 @@ class MainWindowV2:
         # Salvează valorile inițiale la deschiderea dialogului
         eq_history.append([var.get() for var in band_vars])
 
+        value_labels = []  # Listă pentru a păstra referințele la etichete
         for i, (freq, var) in enumerate(zip(freqs, band_vars)):
             band_frame = ttk.Frame(eq_frame)
             band_frame.grid(row=0, column=i, padx=2)
@@ -1176,11 +1192,11 @@ class MainWindowV2:
             slider.pack()
             value_label = ttk.Label(band_frame, text="0.0 dB")
             value_label.pack()
-
+            value_labels.append(value_label)
+            # Fiecare slider actualizează DOAR propria etichetă
             def update_label(var=var, label=value_label):
                 label.config(text=f"{var.get():.1f} dB")
-
-            var.trace_add("write", lambda *args: update_label())
+            var.trace_add("write", lambda *args, var=var, label=value_label: update_label(var, label))
 
         btn_frame = ttk.Frame(dialog)
         btn_frame.pack(fill="x", padx=10, pady=5)
@@ -1207,7 +1223,9 @@ class MainWindowV2:
             try:
                 if self.service.undo():
                     self.update_plot()
-                    self.service.play()
+                    # Oprim redarea curentă înainte de a începe una nouă
+                    self.stop_playback()
+                    self.play()  # Folosește metoda principală play!
                     self.update_fields()
                     # --- Undo și pentru slider-e ---
                     if len(eq_history) > 1:
