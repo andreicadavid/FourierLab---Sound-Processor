@@ -367,7 +367,7 @@ class MainWindowV2:
                     self.update_plot()
                     self.update_fields()
                     self.update_bpm_field()
-                    self.service.play()
+                    #self.service.play()
 
         # Sari la starea selectată la dublu-click
         listbox.bind("<Double-Button-1>", on_select)
@@ -381,7 +381,7 @@ class MainWindowV2:
                     self.update_plot()
                     self.update_fields()
                     self.update_bpm_field()
-                    self.service.play()
+                    #self.service.play()
 
         tk.Button(panel, text="Jump to Selected", command=jump).pack(pady=5)
 

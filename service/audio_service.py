@@ -38,6 +38,15 @@ class AudioService:
         self.is_loading = False  # Adăugăm flag-ul pentru starea de încărcare
         self.is_saving = False  # Adăugăm flag-ul pentru starea de salvare
 
+        # Constante pentru cache
+        self.MAX_CACHE_SIZE = 1024 * 1024 * 1024  # 1GB în bytes
+        self.MAX_CACHE_ENTRIES = 50  # Numărul maxim de intrări în cache
+        self.current_cache_size = 0  # Dimensiunea curentă a cache-ului în bytes
+
+        # Constante pentru undo stack
+        self.MAX_UNDO_STACK_SIZE = 20  # Numărul maxim de stări pentru undo
+        self.current_undo_size = 0  # Dimensiunea curentă a stivei de undo în bytes
+
     def set_progress_callback(self, callback):
         """
         Setează funcția de callback pentru actualizarea progresului.
@@ -131,17 +140,71 @@ class AudioService:
             return True
         return False
 
+    def _calculate_cache_entry_size(self, entry):
+        """
+        Calculează dimensiunea unei intrări din cache în bytes.
+        """
+        if entry is None or "data" not in entry:
+            return 0
+        return entry["data"].nbytes
+
+    def _cleanup_cache(self):
+        """
+        Curăță cache-ul când se atinge limita de dimensiune sau număr de intrări.
+        """
+        while (self.current_cache_size > self.MAX_CACHE_SIZE or
+               len(self.cache) > self.MAX_CACHE_ENTRIES):
+            if not self.cache:
+                break
+            # Eliminăm cea mai veche intrare
+            removed_entry = self.cache.pop(0)
+            self.current_cache_size -= self._calculate_cache_entry_size(removed_entry)
+
     def cache_state(self, effect_name, params=None):
         """
         Salvează starea curentă a înregistrării în cache, cu numele efectului și parametrii.
+        Verifică și menține limitele de dimensiune și număr de intrări.
         """
         if self.recording is not None:
-            self.cache.append({
+            new_entry = {
                 "data": np.copy(self.recording.data),
                 "sample_rate": self.recording.sample_rate,
                 "effect": effect_name,
                 "params": params if params else {}
-            })
+            }
+
+            # Calculăm dimensiunea noii intrări
+            entry_size = self._calculate_cache_entry_size(new_entry)
+
+            # Verificăm dacă avem suficient spațiu
+            if entry_size > self.MAX_CACHE_SIZE:
+                print("Avertisment: Înregistrarea este prea mare pentru cache.")
+                return
+
+            # Adăugăm noua intrare
+            self.cache.append(new_entry)
+            self.current_cache_size += entry_size
+
+            # Curățăm cache-ul dacă este necesar
+            self._cleanup_cache()
+
+    def get_cache_info(self):
+        """
+        Returnează informații despre starea curentă a cache-ului.
+        """
+        return {
+            "current_size": self.current_cache_size,
+            "max_size": self.MAX_CACHE_SIZE,
+            "entries": len(self.cache),
+            "max_entries": self.MAX_CACHE_ENTRIES
+        }
+
+    def clear_cache(self):
+        """
+        Curăță complet cache-ul.
+        """
+        self.cache.clear()
+        self.current_cache_size = 0
 
     def load_from_cache(self, index):
         """
@@ -283,12 +346,47 @@ class AudioService:
             return True
         return False
 
+    def _calculate_undo_entry_size(self, recording):
+        """
+        Calculează dimensiunea unei intrări din stiva de undo în bytes.
+        """
+        if recording is None or not hasattr(recording, 'data'):
+            return 0
+        return recording.data.nbytes
+
     def save_state(self):
         """
         Salvează starea curentă a înregistrării pe stivă.
+        Verifică și menține limita de dimensiune a stivei de undo.
         """
         if self.recording is not None:
-            self.undo_stack.append(Recording(np.copy(self.recording.data), self.recording.sample_rate))
+            new_state = Recording(np.copy(self.recording.data), self.recording.sample_rate)
+            entry_size = self._calculate_undo_entry_size(new_state)
+
+            # Verificăm dacă avem suficient spațiu
+            if entry_size > self.MAX_CACHE_SIZE:
+                print("Avertisment: Înregistrarea este prea mare pentru stiva de undo.")
+                return
+
+            # Adăugăm noua stare
+            self.undo_stack.append(new_state)
+            self.current_undo_size += entry_size
+
+            # Curățăm stiva dacă depășim limita de intrări
+            while len(self.undo_stack) > self.MAX_UNDO_STACK_SIZE:
+                removed_state = self.undo_stack.pop(0)
+                self.current_undo_size -= self._calculate_undo_entry_size(removed_state)
+
+    def get_undo_stack_info(self):
+        """
+        Returnează informații despre starea curentă a stivei de undo.
+        """
+        return {
+            "current_size": self.current_undo_size,
+            "max_size": self.MAX_CACHE_SIZE,
+            "entries": len(self.undo_stack),
+            "max_entries": self.MAX_UNDO_STACK_SIZE
+        }
 
     def undo(self):
         """
@@ -340,8 +438,38 @@ class AudioService:
         return self.recording
 
     def apply_reverb(self, decay=0.5, delay=0.02, ir_duration=0.5):
+        """
+        Aplică efectul de reverb pe înregistrare.
+        :param decay: Factorul de descreștere (0.1-0.9)
+        :param delay: Întârzierea inițială în secunde (0.001-0.1)
+        :param ir_duration: Durata răspunsului la impuls în secunde (0.1-2.0)
+        """
         if self.recording is None:
             print("Nu există înregistrare pentru aplicarea reverbului.")
+            return None
+
+        # Validăm parametrii
+        if not isinstance(decay, (int, float)) or not isinstance(delay, (int, float)) or not isinstance(ir_duration, (int, float)):
+            print("Toți parametrii trebuie să fie numere.")
+            return None
+
+        # Limităm parametrii la valori rezonabile
+        if not (0.1 <= decay <= 0.9):
+            print("Factorul de descreștere trebuie să fie între 0.1 și 0.9.")
+            return None
+
+        if not (0.001 <= delay <= 0.1):
+            print("Întârzierea inițială trebuie să fie între 0.001 și 0.1 secunde.")
+            return None
+
+        if not (0.1 <= ir_duration <= 2.0):
+            print("Durata răspunsului la impuls trebuie să fie între 0.1 și 2.0 secunde.")
+            return None
+
+        # Verificăm dacă delay-ul nu depășește durata înregistrării
+        recording_duration = len(self.recording.data) / self.recording.sample_rate
+        if delay >= recording_duration:
+            print("Întârzierea inițială nu poate fi mai mare sau egală cu durata înregistrării.")
             return None
 
         self.save_state()
@@ -381,8 +509,44 @@ class AudioService:
         return self.recording
 
     def apply_echo(self, decay=0.5, delay=0.2, repeats=5):
+        """
+        Aplică efectul de echo pe înregistrare.
+        :param decay: Factorul de descreștere (0.1-0.9)
+        :param delay: Întârzierea între repetiții în secunde (0.01-1.0)
+        :param repeats: Numărul de repetiții (1-10)
+        """
         if self.recording is None:
             print("Nu există înregistrare pentru aplicarea efectului de echo.")
+            return None
+
+        # Validăm parametrii
+        if not isinstance(decay, (int, float)) or not isinstance(delay, (int, float)) or not isinstance(repeats, int):
+            print("Toți parametrii trebuie să fie numere.")
+            return None
+
+        # Limităm parametrii la valori rezonabile
+        if not (0.1 <= decay <= 0.9):
+            print("Factorul de descreștere trebuie să fie între 0.1 și 0.9.")
+            return None
+
+        if not (0.01 <= delay <= 1.0):
+            print("Întârzierea trebuie să fie între 0.01 și 1.0 secunde.")
+            return None
+
+        if not (1 <= repeats <= 10):
+            print("Numărul de repetiții trebuie să fie între 1 și 10.")
+            return None
+
+        # Verificăm dacă delay-ul nu depășește durata înregistrării
+        recording_duration = len(self.recording.data) / self.recording.sample_rate
+        if delay >= recording_duration:
+            print("Întârzierea nu poate fi mai mare sau egală cu durata înregistrării.")
+            return None
+
+        # Verificăm dacă efectul total nu ar depăși o durată maximă rezonabilă
+        max_echo_duration = recording_duration * 2  # Maximum dublarea duratei
+        if delay * repeats > max_echo_duration:
+            print(f"Combinația de delay și repeats ar crea un efect prea lung (maxim {max_echo_duration:.1f} secunde).")
             return None
 
         self.save_state()
@@ -1152,10 +1316,22 @@ class AudioService:
     def apply_time_stretch_bpm(self, target_bpm):
         """
         Aplică time stretching pe înregistrare pentru a atinge BPM-ul țintă.
-        :param target_bpm: BPM-ul dorit
+        :param target_bpm: BPM-ul dorit (trebuie să fie între 20 și 300)
         """
         if self.recording is None:
             print("Nu există înregistrare pentru time-stretching.")
+            return None
+
+        # Validăm BPM-ul țintă
+        if not isinstance(target_bpm, (int, float)) or target_bpm <= 0:
+            print("BPM-ul țintă trebuie să fie un număr pozitiv.")
+            return None
+
+        # Limităm BPM-ul la valori rezonabile
+        MIN_BPM = 20
+        MAX_BPM = 300
+        if target_bpm < MIN_BPM or target_bpm > MAX_BPM:
+            print(f"BPM-ul țintă trebuie să fie între {MIN_BPM} și {MAX_BPM}.")
             return None
 
         self.save_state()
@@ -1177,7 +1353,6 @@ class AudioService:
 
             # Folosim BPM-ul original salvat sau îl estimăm
             if not hasattr(self, 'original_bpm'):
-                # Estimăm BPM-ul original folosind o metodă mai robustă
                 onset_env = librosa.onset.onset_strength(y=y, sr=sr)
                 tempo = librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr)
                 if isinstance(tempo, np.ndarray):
@@ -1195,6 +1370,13 @@ class AudioService:
             # Calculăm rata de stretching
             stretch_rate = target_bpm / original_bpm
             print(f"Original BPM: {original_bpm:.2f}, Țintă BPM: {target_bpm:.2f}, Stretch Rate: {stretch_rate:.3f}")
+
+            # Limităm rata de stretching la valori rezonabile
+            MIN_STRETCH = 0.25  # 4x mai lent
+            MAX_STRETCH = 4.0   # 4x mai rapid
+            if stretch_rate < MIN_STRETCH or stretch_rate > MAX_STRETCH:
+                print(f"Rata de stretching ({stretch_rate:.2f}) este în afara limitelor permise ({MIN_STRETCH}-{MAX_STRETCH}).")
+                return None
 
             # Aplicăm time stretching
             y_stretched = librosa.effects.time_stretch(y=y, rate=stretch_rate)
