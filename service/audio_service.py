@@ -1,3 +1,7 @@
+import glob
+import os
+import shutil
+
 import numpy as np
 import scipy
 import sounddevice as sd
@@ -13,12 +17,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
+from domain.audio_device_manager import AudioDeviceManager
 from domain.recording import Recording
 from domain.audio_processor import AudioProcessor
 
 
 class AudioService:
     def __init__(self, config):
+        self.device_manager = AudioDeviceManager()
         self.undo_stack = []
         self.config = config
         self.recording = None
@@ -247,26 +253,87 @@ class AudioService:
     def save_recording(self, filename):
         """
         Salvează înregistrarea într-un thread separat.
+        :param filename: Numele fișierului unde se va salva înregistrarea
+        :return: True dacă salvarea a început cu succes, False altfel
         """
         if not self.recording:
             print("Nu există înregistrare de salvat.")
-            return
+            return False
+
+        # Verificăm dacă directorul există
+        directory = os.path.dirname(filename)
+        if directory and not os.path.exists(directory):
+            try:
+                os.makedirs(directory)
+            except Exception as e:
+                print(f"Nu s-a putut crea directorul {directory}: {e}")
+                return False
+
+        # Verificăm dacă avem permisiuni de scriere
+        if os.path.exists(filename):
+            if not os.access(filename, os.W_OK):
+                print(f"Nu există permisiuni de scriere pentru {filename}")
+                return False
+        else:
+            if not os.access(directory or '.', os.W_OK):
+                print(f"Nu există permisiuni de scriere în directorul {directory or '.'}")
+                return False
 
         def save_task():
             try:
                 self.is_saving = True
                 print(f"Salvare înregistrare: {len(self.recording.data) / self.recording.sample_rate:.2f} secunde")
+
+                # Verificăm dacă avem suficient spațiu pe disc
+                required_space = len(self.recording.data) * 2  # 2 bytes per sample
+                if os.path.exists(filename):
+                    required_space -= os.path.getsize(filename)
+
+                if os.path.exists(filename):
+                    free_space = shutil.disk_usage(os.path.dirname(filename)).free
+                else:
+                    free_space = shutil.disk_usage('.').free
+
+                if free_space < required_space:
+                    print(
+                        f"Nu există suficient spațiu pe disc. Necesar: {required_space / 1024 / 1024:.1f}MB, Disponibil: {free_space / 1024 / 1024:.1f}MB")
+                    self.is_saving = False
+                    return False
+
                 # Convertim la int16 și salvăm întregul semnal
                 audio_data = np.int16(self.recording.data * 32767)
-                wav.write(filename, self.recording.sample_rate, audio_data)
+
+                # Salvăm într-un fișier temporar mai întâi
+                temp_filename = filename + '.tmp'
+                wav.write(temp_filename, self.recording.sample_rate, audio_data)
+
+                # Dacă salvarea a reușit, redenumim fișierul temporar
+                if os.path.exists(filename):
+                    os.remove(filename)
+                os.rename(temp_filename, filename)
+
                 print(f"Înregistrare salvată în {filename}")
+                return True
+
+            except MemoryError:
+                print("Nu există suficientă memorie pentru a salva înregistrarea.")
+                return False
             except Exception as e:
                 print(f"Eroare la salvarea înregistrării: {e}")
+                # Încercăm să curățăm fișierul temporar dacă există
+                if os.path.exists(temp_filename):
+                    try:
+                        os.remove(temp_filename)
+                    except:
+                        pass
+                return False
             finally:
                 self.is_saving = False
 
+        # Pornim salvarea într-un thread separat
         save_thread = threading.Thread(target=save_task)
         save_thread.start()
+        return True
 
     def play(self):
         """
@@ -403,6 +470,18 @@ class AudioService:
     def pitch_shift(self, up=True):
         if self.recording is None:
             print("Nu există înregistrare pentru pitch shift.")
+            return None
+
+        # Validăm factorul de pitch
+        if not isinstance(self.config.pitch_factor, (int, float)) or self.config.pitch_factor <= 0:
+            print("Factorul de pitch trebuie să fie un număr pozitiv.")
+            return None
+
+        # Limităm factorul de pitch la valori rezonabile (0.5 - 2.0)
+        MIN_PITCH_FACTOR = 0.5
+        MAX_PITCH_FACTOR = 2.0
+        if not (MIN_PITCH_FACTOR <= self.config.pitch_factor <= MAX_PITCH_FACTOR):
+            print(f"Factorul de pitch trebuie să fie între {MIN_PITCH_FACTOR} și {MAX_PITCH_FACTOR}.")
             return None
 
         self.save_state()
@@ -581,7 +660,24 @@ class AudioService:
 
     def apply_equalizer(self, bands):
         if self.recording is None:
+            print("Nu există înregistrare pentru egalizator.")
             return None
+
+        # Validăm benzile de frecvență
+        if not isinstance(bands, (list, tuple, np.ndarray)) or len(bands) != 10:
+            print("Trebuie să furnizați exact 10 benzi de frecvență.")
+            return None
+
+        # Validăm valorile pentru fiecare bandă
+        MIN_GAIN = -12.0  # -12 dB
+        MAX_GAIN = 12.0  # +12 dB
+        for i, gain in enumerate(bands):
+            if not isinstance(gain, (int, float)):
+                print(f"Valoarea pentru banda {i + 1} trebuie să fie un număr.")
+                return None
+            if not (MIN_GAIN <= gain <= MAX_GAIN):
+                print(f"Valoarea pentru banda {i + 1} trebuie să fie între {MIN_GAIN} și {MAX_GAIN} dB.")
+                return None
 
         self.save_state()
         if self.progress_callback:
@@ -618,70 +714,56 @@ class AudioService:
 
         return self.recording
 
-    def apply_reverb_with_ir(self, ir_path="C:/Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav"):
+    def apply_reverb_with_ir(self, ir_name="bathroom.wav"):
+        """
+        Aplică efectul de reverb folosind un fișier IR.
+        :param ir_name: Numele fișierului IR
+        :return: Recording sau None în caz de eroare
+        """
         if self.recording is None:
             print("Nu există înregistrare pentru aplicarea reverbului.")
+            return None
+
+        # Obținem calea către fișierul IR
+        ir_path = self.device_manager.get_ir_path(ir_name)
+        if not ir_path.exists():
+            print(f"Fișierul IR {ir_name} nu există în directorul {self.device_manager.ir_base_path}")
             return None
 
         self.save_state()
         if self.progress_callback:
             self.progress_callback(0)
 
-        # Încarcă și pregătește IR-ul
-        ir, ir_sr = librosa.load(ir_path, sr=None)
-        if ir_sr != self.recording.sample_rate:
-            ir = librosa.resample(ir, orig_sr=ir_sr, target_sr=self.recording.sample_rate)
-        ir = ir / np.max(np.abs(ir))
+        try:
+            # Încarcă și pregătește IR-ul
+            ir, ir_sr = librosa.load(str(ir_path), sr=None)
+            if ir_sr != self.recording.sample_rate:
+                ir = librosa.resample(ir, orig_sr=ir_sr, target_sr=self.recording.sample_rate)
+            ir = ir / np.max(np.abs(ir))
 
-        def process_reverb_ir_chunk(chunk, sr, ir):
-            from scipy.signal import fftconvolve
-            # Folosim mode='full' pentru a păstra întreaga coadă a reverbului
-            reverb_signal = fftconvolve(chunk, ir, mode='full')
-            # Normalizare locală pentru chunk
-            max_val = np.max(np.abs(reverb_signal))
-            if max_val > 0:
-                reverb_signal = reverb_signal / max_val
-            return reverb_signal
-
-        # Procesăm pe bucăți mai mici pentru a evita probleme de memorie
-        chunk_size = min(1024 * 1024, len(self.recording.data))  # 1MB sau mai puțin
-        processed_data = self.process_in_chunks(
-            process_reverb_ir_chunk,
-            chunk_size=chunk_size,
-            ir=ir
-        )
-
-        if processed_data is not None:
-            # Calculăm lungimea maximă permisă (original + 50% pentru reverb)
-            max_length = int(len(self.recording.data) * 1.5)
-
-            # Dacă semnalul procesat este mai lung decât maximul permis
-            if len(processed_data) > max_length:
-                # Aplicăm un fade-out gradual pe ultimele 500ms
-                fade_length = int(0.5 * self.recording.sample_rate)
-                fade_out = np.linspace(1, 0, fade_length)
-                processed_data[-fade_length:] *= fade_out
-                # Tăiem la lungimea maximă
-                processed_data = processed_data[:max_length]
-            else:
-                # Dacă semnalul este mai scurt, îl extindem la lungimea originală
-                if len(processed_data) < len(self.recording.data):
-                    padding = np.zeros(len(self.recording.data) - len(processed_data))
-                    processed_data = np.concatenate([processed_data, padding])
+            processed_data = self.process_in_chunks(
+                self.process_reverb_ir_chunk,
+                ir=ir
+            )
 
             # Normalizăm rezultatul final
             max_val = np.max(np.abs(processed_data))
             if max_val > 0:
                 processed_data = processed_data / max_val * 0.95  # Lăsăm un pic de headroom
 
-            self.recording = Recording(processed_data, self.recording.sample_rate)
-            self.cache_state("ReverbIR", {"ir_path": ir_path})
-            self._update_duration()
+            if processed_data is not None:
+                self.recording = Recording(processed_data, self.recording.sample_rate)
+                self.cache_state("ReverbIR", {"ir_name": ir_name})
+                self._update_duration()
 
-        if self.progress_callback:
-            self.progress_callback(100)
-        self._update_duration()
-        return self.recording
+            if self.progress_callback:
+                self.progress_callback(100)
+
+            return self.recording
+
+        except Exception as e:
+            print(f"Eroare la aplicarea reverbului cu IR: {e}")
+            return None
 
     def calculate_spectral_features(self):
         if self.recording is None:
@@ -759,6 +841,10 @@ class AudioService:
         if self.recording is None:
             return None
 
+        # Verificăm dacă avem deja BPM-ul calculat pentru această înregistrare
+        if hasattr(self.recording, 'cached_bpm'):
+            return self.recording.cached_bpm
+
         def analysis_task():
             try:
                 y = self.recording.data
@@ -786,8 +872,13 @@ class AudioService:
                 tempo, _ = librosa.beat.beat_track(y=y, sr=self.recording.sample_rate,
                                                    hop_length=hop_length, sparse=False)
 
+                # Convertim la float pentru a evita probleme de formatare
+                tempo = float(tempo)
                 print(f"BPM estimat: {tempo:.2f}")
-                return float(tempo)
+
+                # Salvăm BPM-ul în cache
+                self.recording.cached_bpm = tempo
+                return tempo
             except Exception as e:
                 print(f"Eroare la estimarea BPM: {e}")
                 return None
@@ -892,7 +983,6 @@ class AudioService:
         mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
         return mel_spec_db, sr
 
-
     def generate_mfcc(self):
         """
         Generează datele pentru MFCC (Mel Frequency Cepstral Coefficients).
@@ -924,7 +1014,6 @@ class AudioService:
         cqt_db = librosa.amplitude_to_db(np.abs(cqt), ref=np.max)
         return cqt_db, sr
 
-
     def process_compressor_chunk(self, chunk, sr, threshold_db=-30.0, ratio=8.0):
         """
         Procesează un chunk pentru efectul de compresor.
@@ -942,6 +1031,26 @@ class AudioService:
     def apply_simple_compressor(self, threshold_db=-10.0, ratio=2.0, normalize=False):
         if self.recording is None:
             print("Nu există înregistrare pentru compresor.")
+            return None
+
+        # Validăm threshold-ul
+        MIN_THRESHOLD = -60.0  # -60 dB
+        MAX_THRESHOLD = 0.0  # 0 dB
+        if not isinstance(threshold_db, (int, float)):
+            print("Threshold-ul trebuie să fie un număr.")
+            return None
+        if not (MIN_THRESHOLD <= threshold_db <= MAX_THRESHOLD):
+            print(f"Threshold-ul trebuie să fie între {MIN_THRESHOLD} și {MAX_THRESHOLD} dB.")
+            return None
+
+        # Validăm ratio-ul
+        MIN_RATIO = 1.0  # 1:1 (no compression)
+        MAX_RATIO = 20.0  # 20:1 (heavy compression)
+        if not isinstance(ratio, (int, float)):
+            print("Ratio-ul trebuie să fie un număr.")
+            return None
+        if not (MIN_RATIO <= ratio <= MAX_RATIO):
+            print(f"Ratio-ul trebuie să fie între {MIN_RATIO} și {MAX_RATIO}.")
             return None
 
         self.save_state()
@@ -1268,51 +1377,6 @@ class AudioService:
             reverb_signal = reverb_signal / max_val
         return reverb_signal
 
-    def apply_reverb_with_ir_chunked(self, ir_path="C:/Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav"):
-        if self.recording is None:
-            print("Nu există înregistrare pentru aplicarea reverbului.")
-            return None
-
-        self.save_state()
-        if self.progress_callback:
-            self.progress_callback(0)
-
-        data = self.recording.data
-        sr = self.recording.sample_rate
-
-        # Încarcă și pregătește IR-ul
-        ir, ir_sr = librosa.load(ir_path, sr=None)
-        if ir_sr != sr:
-            ir = librosa.resample(ir, orig_sr=ir_sr, target_sr=sr)
-        ir = ir / np.max(np.abs(ir))
-
-        # Procesăm pe bucăți
-        processed_data = self.process_in_chunks(
-            self.process_reverb_ir_chunk,
-            ir=ir
-        )
-
-        # Limităm lungimea la original + 25%
-        max_length = int(len(data) * 1.25)
-        if len(processed_data) > max_length:
-            processed_data = processed_data[:max_length]
-            # Fade-out pe ultimele 100ms
-            fade_length = int(0.1 * sr)
-            fade_out = np.linspace(1, 0, fade_length)
-            processed_data[-fade_length:] *= fade_out
-
-        # Normalizăm rezultatul final
-        max_val = np.max(np.abs(processed_data))
-        if max_val > 0:
-            processed_data = processed_data / max_val * 0.95
-
-        self.recording = Recording(processed_data, sr)
-        self.cache_state("ReverbIRChunked", {"ir_path": ir_path})
-        self._update_duration()
-        if self.progress_callback:
-            self.progress_callback(100)
-        return self.recording
-
     def apply_time_stretch_bpm(self, target_bpm):
         """
         Aplică time stretching pe înregistrare pentru a atinge BPM-ul țintă.
@@ -1353,10 +1417,7 @@ class AudioService:
 
             # Folosim BPM-ul original salvat sau îl estimăm
             if not hasattr(self, 'original_bpm'):
-                onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-                tempo = librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr)
-                if isinstance(tempo, np.ndarray):
-                    tempo = float(tempo.item())
+                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
                 self.original_bpm = tempo
                 print(f"BPM original estimat: {self.original_bpm:.2f}")
 
@@ -1373,9 +1434,10 @@ class AudioService:
 
             # Limităm rata de stretching la valori rezonabile
             MIN_STRETCH = 0.25  # 4x mai lent
-            MAX_STRETCH = 4.0   # 4x mai rapid
+            MAX_STRETCH = 4.0  # 4x mai rapid
             if stretch_rate < MIN_STRETCH or stretch_rate > MAX_STRETCH:
-                print(f"Rata de stretching ({stretch_rate:.2f}) este în afara limitelor permise ({MIN_STRETCH}-{MAX_STRETCH}).")
+                print(
+                    f"Rata de stretching ({stretch_rate:.2f}) este în afara limitelor permise ({MIN_STRETCH}-{MAX_STRETCH}).")
                 return None
 
             # Aplicăm time stretching
@@ -1388,11 +1450,13 @@ class AudioService:
 
             # Creăm noua înregistrare
             self.recording = Recording(y_stretched, sr)
+
+            # Forțăm BPM-ul țintă în cache
+            self.recording.cached_bpm = target_bpm
+            self.recording.original_bpm = target_bpm
+
             self.cache_state("TimeStretch", {"target_bpm": target_bpm, "stretch_rate": stretch_rate})
             self._update_duration()
-
-            # Actualizăm BPM-ul original pentru următoarea operație
-            self.original_bpm = target_bpm
 
             if self.progress_callback:
                 self.progress_callback(100)
@@ -1404,10 +1468,22 @@ class AudioService:
             print(f"Eroare la aplicarea time-stretching: {e}")
             return None
 
+        except Exception as e:
+            print(f"Eroare la aplicarea time-stretching: {e}")
+            return None
+
     def load_audio(self, path: str) -> bool:
         """
         Încarcă un fișier audio în format WAV folosind procesare pe chunks.
+        :param path: Calea către fișierul audio
+        :return: True dacă încărcarea a reușit, False altfel
         """
+        # Verificăm compatibilitatea fișierului
+        is_compatible, error_message = self.device_manager.check_file_compatibility(path)
+        if not is_compatible:
+            print(error_message)
+            return False
+
         try:
             with wave.open(path, 'rb') as wav_file:
                 n_channels = wav_file.getnchannels()
@@ -1467,22 +1543,40 @@ class AudioService:
             print(f"Eroare la încărcarea fișierului: {e}")
             return False
 
-
     def cleanup(self):
         """
         Curăță resursele folosite de serviciu.
         """
-        # Oprim procesorul audio
-        if hasattr(self, 'processor'):
-            self.processor.shutdown()
+        try:
+            # Oprim procesorul audio
+            if hasattr(self, 'processor'):
+                self.processor.shutdown()
 
-        # Eliberăm memoria
-        self.undo_stack.clear()
-        self.cache.clear()
-        self.recording = None
+            # Oprim orice înregistrare sau redare în curs
+            if self.is_recording:
+                self.stop_recording()
+            if self.is_playing:
+                self.stop_playback()
 
+            # Eliberăm memoria
+            self.undo_stack.clear()
+            self.cache.clear()
+            self.recording = None
 
+            # Curățăm orice fișiere temporare rămase
+            temp_files = glob.glob('*.tmp')
+            for temp_file in temp_files:
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
 
-
-
-
+        except Exception as e:
+            print(f"Eroare la curățarea resurselor: {e}")
+            # Continuăm cu curățarea chiar dacă apare o eroare
+            try:
+                self.undo_stack.clear()
+                self.cache.clear()
+                self.recording = None
+            except:
+                pass

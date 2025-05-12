@@ -7,6 +7,7 @@ import sounddevice as sd
 import numpy as np
 import librosa
 import librosa.display
+import librosa.feature
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 
@@ -700,20 +701,14 @@ class MainWindowV2:
             if hasattr(self.service, 'original_bpm') and self.service.original_bpm is not None:
                 bpm = self.service.original_bpm
             else:
-                # Dacă nu există, îl calculăm
-                y = self.service.recording.data
-                sr = self.service.recording.sample_rate
-                # Folosim beat_track pentru a calcula BPM-ul
-                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-                if isinstance(tempo, np.ndarray):
-                    bpm = float(tempo.item())
-                else:
-                    bpm = float(tempo)
-                # Salvăm BPM-ul calculat în service
-                self.service.original_bpm = bpm
+                # Dacă nu există, îl calculăm folosind metoda din service
+                bpm = self.service.estimate_bpm()
+                if bpm is not None:
+                    self.service.original_bpm = bpm
 
-            self.bpm_entry.delete(0, tk.END)
-            self.bpm_entry.insert(0, f"{bpm:.2f}")
+            if bpm is not None:
+                self.bpm_entry.delete(0, tk.END)
+                self.bpm_entry.insert(0, f"{bpm:.2f}")
 
     def record(self):
         """
@@ -818,22 +813,35 @@ class MainWindowV2:
 
     def save_recording(self):
         """
-        Salvează înregistrarea într-un thread separat.
+        Salvează înregistrarea curentă.
         """
         if not self.service.recording:
-            messagebox.showwarning("Avertisment", "Nu există înregistrare de salvat.")
+            messagebox.showwarning("Avertisment", "Nu există înregistrare de salvat!")
             return
 
+        # Deschide dialogul de salvare
         file_path = filedialog.asksaveasfilename(
             defaultextension=".wav",
-            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+            filetypes=[("WAV files", "*.wav")],
+            initialdir="recordings"
         )
+
         if file_path:
+            # Dezactivează butonul de salvare
+            for widget in self.root.winfo_children():
+                if isinstance(widget, ttk.Frame):
+                    for child in widget.winfo_children():
+                        if isinstance(child, ttk.Button) and child.cget("text") == "Salvează":
+                            child.config(state="disabled")
+
+            # Actualizează status
             self.status_label.config(text="Se salvează...")
-            self.progress_var.set(0)
+
+            # Pornește salvarea
             self.service.save_recording(file_path)
-            # Salvarea se face în thread separat, așteptăm finalizarea
-            self.root.after(100, self._check_saving_status)
+
+            # Pornește verificarea statusului
+            self._check_saving_status()
 
     def _check_recording_status(self):
         """
@@ -921,6 +929,27 @@ class MainWindowV2:
         # Actualizăm toate câmpurile relevante
         self.update_fields()
 
+    def _check_saving_status(self):
+        """
+        Verifică periodic dacă salvarea s-a terminat și actualizează UI-ul.
+        """
+        if self.service.is_saving:
+            # Dacă încă se salvează, verifică din nou după 100ms
+            self.root.after(100, self._check_saving_status)
+        else:
+            # Salvarea s-a terminat, actualizează UI-ul
+            self.status_label.config(text="Salvare finalizată!")
+
+            # Re-activează butonul de salvare
+            for widget in self.root.winfo_children():
+                if isinstance(widget, ttk.Frame):
+                    for child in widget.winfo_children():
+                        if isinstance(child, ttk.Button) and child.cget("text") == "Salvează":
+                            child.config(state="normal")
+
+            # Curăță mesajul după 2 secunde
+            self.root.after(2000, lambda: self.status_label.config(text=""))
+
     def apply_reverb(self):
         try:
             self.status_label.config(text="Se aplică reverb...")
@@ -933,7 +962,7 @@ class MainWindowV2:
 
             def task():
                 try:
-                    self.service.apply_reverb_with_ir("C:\Faculta/an_3/Licenta/Licenta_tkinter/IR/bathroom.wav")
+                    self.service.apply_reverb_with_ir("bathroom.wav")
                     self.root.after(0, self.on_reverb_done)
                 except Exception as e:
                     messagebox.showerror("Eroare", f"Eroare la reverb: {e}")
@@ -1485,3 +1514,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = MainWindowV2(root)
     root.mainloop()
+    #e bun
