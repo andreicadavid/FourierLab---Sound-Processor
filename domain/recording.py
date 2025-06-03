@@ -3,9 +3,11 @@
 class Recording:
     def __init__(self, data, sample_rate):
         """
-        Reprezintă o înregistrare audio.
+        Clasa Recording surprinde caracteristicile de bază care
+        constituie reprezentarea unei înregistrări audio.
 
-        :param data: numpy array cu semnalul audio
+        :param data: un vector de tip numpy array care stochează valorile numerice
+        discretizate ale semnalului audio digitalizat
         :param sample_rate: rata de eșantionare (Hz)
         """
         self.data = data

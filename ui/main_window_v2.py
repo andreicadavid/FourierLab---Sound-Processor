@@ -994,7 +994,9 @@ class MainWindowV2:
             self.progress_var.set(0)
 
             # Aplicăm time stretch
-            result = self.service.apply_time_stretch_bpm(target_bpm)
+            result = (self.service.
+                      
+                      apply_time_stretch_bpm(target_bpm))
 
             if result:
                 # Actualizăm interfața

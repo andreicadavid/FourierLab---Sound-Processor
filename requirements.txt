@@ -1,0 +1,7 @@
+sounddevice
+matplotlib
+numpy
+librosa
+scipy
+pyaudio
+tk
